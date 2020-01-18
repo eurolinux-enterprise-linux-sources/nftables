@@ -1,0 +1,47 @@
+From b43f64d4c9dcd52da901ea1274895d11575acf4e Mon Sep 17 00:00:00 2001
+From: Phil Sutter <psutter@redhat.com>
+Date: Fri, 12 May 2017 17:57:57 +0200
+Subject: [PATCH] meta: fix memory leak in tc classid parser
+
+Bugzilla: https://bugzilla.redhat.com/show_bug.cgi?id=1380326
+Upstream Status: nftables commit d815b8d2bf18b
+
+commit d815b8d2bf18bc589f10c3fb4524a2b93fe91b93
+Author: Liping Zhang <liping.zhang@spreadtrum.com>
+Date:   Sun Aug 28 16:36:22 2016 +0800
+
+    meta: fix memory leak in tc classid parser
+
+    We forgot to free the str which was allocated by xstrdup,
+    so memory leak will happen.
+
+    Signed-off-by: Liping Zhang <liping.zhang@spreadtrum.com>
+    Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>
+---
+ src/meta.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/meta.c b/src/meta.c
+index 652b1cf..d77106e 100644
+--- a/src/meta.c
++++ b/src/meta.c
+@@ -90,7 +90,7 @@ static struct error_record *tchandle_type_parse(const struct expr *sym,
+ 						struct expr **res)
+ {
+ 	uint32_t handle;
+-	char *str;
++	char *str = NULL;
+ 
+ 	if (strcmp(sym->identifier, "root") == 0)
+ 		handle = TC_H_ROOT;
+@@ -127,6 +127,7 @@ static struct error_record *tchandle_type_parse(const struct expr *sym,
+ 		handle = strtoull(sym->identifier, NULL, 0);
+ 	}
+ out:
++	xfree(str);
+ 	*res = constant_expr_alloc(&sym->location, sym->dtype,
+ 				   BYTEORDER_HOST_ENDIAN,
+ 				   sizeof(handle) * BITS_PER_BYTE, &handle);
+-- 
+1.8.3.1
+

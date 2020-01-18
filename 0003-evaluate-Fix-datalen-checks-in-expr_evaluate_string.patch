@@ -1,0 +1,53 @@
+From 19c9a7bfb73f33f50675f31f3664556105a50086 Mon Sep 17 00:00:00 2001
+From: Phil Sutter <psutter@redhat.com>
+Date: Tue, 28 Feb 2017 18:14:53 +0100
+Subject: [PATCH] evaluate: Fix datalen checks in expr_evaluate_string()
+
+Bugzilla: https://bugzilla.redhat.com/show_bug.cgi?id=1360240
+Upstream Status: nftables commit 7a5b4c505e4d4
+
+commit 7a5b4c505e4d460239ac8a36b4fbccf222cd6134
+Author: Phil Sutter <phil@nwl.cc>
+Date:   Tue Aug 30 19:39:49 2016 +0200
+
+    evaluate: Fix datalen checks in expr_evaluate_string()
+
+    I have been told that the flex scanner won't return empty strings, so
+    strlen(data) should always be greater 0. To avoid a hard to debug issue
+    though, add an assert() to make sure this is always the case before
+    risking an unsigned variable underrun.
+
+    A real issue though is the check for 'datalen - 1 >= 0', which will
+    never fail due to datalen being unsigned. Fix this by incrementing both
+    sides by one, hence checking 'datalen >= 1'.
+
+    Signed-off-by: Phil Sutter <phil@nwl.cc>
+    Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>
+---
+ src/evaluate.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/evaluate.c b/src/evaluate.c
+index f24e5f3..5e3c158 100644
+--- a/src/evaluate.c
++++ b/src/evaluate.c
+@@ -248,6 +248,7 @@ static int expr_evaluate_string(struct eval_ctx *ctx, struct expr **exprp)
+ 	memset(data + len, 0, data_len - len);
+ 	mpz_export_data(data, expr->value, BYTEORDER_HOST_ENDIAN, len);
+ 
++	assert(strlen(data) > 0);
+ 	datalen = strlen(data) - 1;
+ 	if (data[datalen] != '*') {
+ 		/* We need to reallocate the constant expression with the right
+@@ -261,7 +262,7 @@ static int expr_evaluate_string(struct eval_ctx *ctx, struct expr **exprp)
+ 		return 0;
+ 	}
+ 
+-	if (datalen - 1 >= 0 &&
++	if (datalen >= 1 &&
+ 	    data[datalen - 1] == '\\') {
+ 		char unescaped_str[data_len];
+ 
+-- 
+1.8.3.1
+

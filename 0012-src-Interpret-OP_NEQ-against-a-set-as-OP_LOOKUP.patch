@@ -1,0 +1,131 @@
+From cb0e9dac618d08410a799d0f6e24c03052754b53 Mon Sep 17 00:00:00 2001
+From: Phil Sutter <psutter@redhat.com>
+Date: Fri, 12 May 2017 18:32:43 +0200
+Subject: [PATCH] src: Interpret OP_NEQ against a set as OP_LOOKUP
+
+Bugzilla: https://bugzilla.redhat.com/show_bug.cgi?id=1440011
+Upstream Status: nftables commit cc7b37d18a687
+
+commit cc7b37d18a687d53e8724b3104b042e6767a9cef
+Author: Anatole Denis <anatole@rezel.net>
+Date:   Thu Nov 24 15:16:20 2016 +0100
+
+    src: Interpret OP_NEQ against a set as OP_LOOKUP
+
+    Now that the support for inverted matching is in the kernel and in libnftnl, add
+    it to nftables too.
+
+    This fixes bug #888
+
+    Signed-off-by: Anatole Denis <anatole@rezel.net>
+    Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>
+---
+ src/evaluate.c            | 14 ++++++++++++++
+ src/netlink_delinearize.c | 10 ++++++++++
+ src/netlink_linearize.c   | 14 +++++++++-----
+ 3 files changed, 33 insertions(+), 5 deletions(-)
+
+diff --git a/src/evaluate.c b/src/evaluate.c
+index 1b8d565..680eda0 100644
+--- a/src/evaluate.c
++++ b/src/evaluate.c
+@@ -1460,6 +1460,20 @@ static int expr_evaluate_relational(struct eval_ctx *ctx, struct expr **expr)
+ 			if (byteorder_conversion(ctx, &rel->right, left->byteorder) < 0)
+ 				return -1;
+ 			break;
++		case EXPR_SET:
++			assert(rel->op == OP_NEQ);
++			right = rel->right =
++				implicit_set_declaration(ctx, "__set%d",
++							 left->dtype, left->len,
++							 right);
++			/* fall through */
++		case EXPR_SET_REF:
++			assert(rel->op == OP_NEQ);
++			/* Data for range lookups needs to be in big endian order */
++			if (right->set->flags & SET_F_INTERVAL &&
++			    byteorder_conversion(ctx, &rel->left, BYTEORDER_BIG_ENDIAN) < 0)
++				return -1;
++			break;
+ 		default:
+ 			BUG("invalid expression type %s\n", right->ops->name);
+ 		}
+diff --git a/src/netlink_delinearize.c b/src/netlink_delinearize.c
+index 505516c..c002538 100644
+--- a/src/netlink_delinearize.c
++++ b/src/netlink_delinearize.c
+@@ -299,6 +299,7 @@ static void netlink_parse_lookup(struct netlink_parse_ctx *ctx,
+ 	const char *name;
+ 	struct expr *expr, *left, *right;
+ 	struct set *set;
++	uint32_t flag;
+ 
+ 	name = nftnl_expr_get_str(nle, NFTNL_EXPR_LOOKUP_SET);
+ 	set  = set_lookup(ctx->table, name);
+@@ -330,6 +331,12 @@ static void netlink_parse_lookup(struct netlink_parse_ctx *ctx,
+ 		expr = relational_expr_alloc(loc, OP_LOOKUP, left, right);
+ 	}
+ 
++	if (nftnl_expr_is_set(nle, NFTNL_EXPR_LOOKUP_FLAGS)) {
++		flag = nftnl_expr_get_u32(nle, NFTNL_EXPR_LOOKUP_FLAGS);
++		if (flag & NFT_LOOKUP_F_INV)
++			expr->op = OP_NEQ;
++	}
++
+ 	ctx->stmt = expr_stmt_alloc(loc, expr);
+ }
+ 
+@@ -1218,6 +1225,9 @@ static void ct_meta_common_postprocess(const struct expr *expr)
+ 	struct expr *right = expr->right;
+ 
+ 	switch (expr->op) {
++	case OP_NEQ:
++		if (right->ops->type != EXPR_SET && right->ops->type != EXPR_SET_REF)
++			break;
+ 	case OP_LOOKUP:
+ 		expr_set_type(right, left->dtype, left->byteorder);
+ 		if (right->dtype == &integer_type)
+diff --git a/src/netlink_linearize.c b/src/netlink_linearize.c
+index ffc3f57..8d8ec92 100644
+--- a/src/netlink_linearize.c
++++ b/src/netlink_linearize.c
+@@ -216,6 +216,8 @@ static void netlink_gen_lookup(struct netlink_linearize_ctx *ctx,
+ 			   expr->right->set->handle.set);
+ 	nftnl_expr_set_u32(nle, NFTNL_EXPR_LOOKUP_SET_ID,
+ 			   expr->right->set->handle.set_id);
++	if (expr->op == OP_NEQ)
++		nftnl_expr_set_u32(nle, NFTNL_EXPR_LOOKUP_FLAGS, NFT_LOOKUP_F_INV);
+ 
+ 	release_register(ctx, expr->left);
+ 	nftnl_rule_add_expr(ctx->nlr, nle);
+@@ -284,13 +286,14 @@ static void netlink_gen_cmp(struct netlink_linearize_ctx *ctx,
+ 
+ 	assert(dreg == NFT_REG_VERDICT);
+ 
+-	if (expr->right->ops->type == EXPR_RANGE)
+-		return netlink_gen_range(ctx, expr, dreg);
+-
+-	sreg = get_register(ctx, expr->left);
+-
+ 	switch (expr->right->ops->type) {
++	case EXPR_RANGE:
++		return netlink_gen_range(ctx, expr, dreg);
++	case EXPR_SET:
++	case EXPR_SET_REF:
++		return netlink_gen_lookup(ctx, expr, dreg);
+ 	case EXPR_PREFIX:
++		sreg = get_register(ctx, expr->left);
+ 		if (expr->left->dtype->type != TYPE_STRING) {
+ 			len = div_round_up(expr->right->len, BITS_PER_BYTE);
+ 			netlink_gen_expr(ctx, expr->left, sreg);
+@@ -303,6 +306,7 @@ static void netlink_gen_cmp(struct netlink_linearize_ctx *ctx,
+ 		}
+ 		break;
+ 	default:
++		sreg = get_register(ctx, expr->left);
+ 		len = div_round_up(expr->right->len, BITS_PER_BYTE);
+ 		right = expr->right;
+ 		netlink_gen_expr(ctx, expr->left, sreg);
+-- 
+1.8.3.1
+

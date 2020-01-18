@@ -1,0 +1,2446 @@
+From 0c88dfebed17ad23e25e53740872a2c825c68e9d Mon Sep 17 00:00:00 2001
+From: Phil Sutter <psutter@redhat.com>
+Date: Fri, 24 Feb 2017 17:01:36 +0100
+Subject: [PATCH] src: use new range expression for != [a,b] intervals
+
+Bugzilla: https://bugzilla.redhat.com/show_bug.cgi?id=1358705
+Upstream Status: nftables commit 3ed932917cc74
+Conflicts:
+* Context change in nf_tables.h due to missing inverted lookup matching
+  support.
+* Adjusted test case changes to missing commit 82dfc87c85f00 ("datatype:
+  time_type should send milliseconds to userspace").
+
+commit 3ed932917cc744b489bd2706a55a1778b0b50c0e
+Author: Pablo Neira Ayuso <pablo@netfilter.org>
+Date:   Tue Sep 20 19:25:25 2016 +0200
+
+    src: use new range expression for != [a,b] intervals
+
+    Use new range expression in the kernel to fix wrong bytecode generation.
+    This patch also adjust tests so we don't hit problems there.
+
+    Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>
+---
+ include/linux/netfilter/nf_tables.h    | 29 +++++++++++++++++++++
+ src/netlink_delinearize.c              | 45 +++++++++++++++++++++++++++++++++
+ src/netlink_linearize.c                | 46 ++++++++++++++++------------------
+ tests/py/any/ct.t.payload              |  6 ++---
+ tests/py/any/meta.t.payload            | 18 +++++--------
+ tests/py/arp/arp.t.payload             |  9 +++----
+ tests/py/arp/arp.t.payload.netdev      |  9 +++----
+ tests/py/inet/ah.t.payload.inet        | 12 +++------
+ tests/py/inet/ah.t.payload.ip          | 12 +++------
+ tests/py/inet/ah.t.payload.ip6         | 12 +++------
+ tests/py/inet/ah.t.payload.netdev      | 12 +++------
+ tests/py/inet/comp.t.payload.inet      |  6 ++---
+ tests/py/inet/comp.t.payload.ip        |  6 ++---
+ tests/py/inet/comp.t.payload.ip6       |  6 ++---
+ tests/py/inet/comp.t.payload.netdev    |  6 ++---
+ tests/py/inet/dccp.t.payload.inet      |  3 +--
+ tests/py/inet/dccp.t.payload.ip        |  3 +--
+ tests/py/inet/dccp.t.payload.ip6       |  3 +--
+ tests/py/inet/dccp.t.payload.netdev    |  3 +--
+ tests/py/inet/esp.t.payload.inet       |  6 ++---
+ tests/py/inet/esp.t.payload.ip         |  6 ++---
+ tests/py/inet/esp.t.payload.ip6        |  6 ++---
+ tests/py/inet/esp.t.payload.netdev     |  6 ++---
+ tests/py/inet/sctp.t.payload.inet      | 12 +++------
+ tests/py/inet/sctp.t.payload.ip        | 12 +++------
+ tests/py/inet/sctp.t.payload.ip6       | 12 +++------
+ tests/py/inet/sctp.t.payload.netdev    | 12 +++------
+ tests/py/inet/tcp.t.payload.inet       | 21 ++++++----------
+ tests/py/inet/tcp.t.payload.ip         | 21 ++++++----------
+ tests/py/inet/tcp.t.payload.ip6        | 21 ++++++----------
+ tests/py/inet/tcp.t.payload.netdev     | 21 ++++++----------
+ tests/py/inet/udp.t.payload.inet       | 12 +++------
+ tests/py/inet/udp.t.payload.ip         | 12 +++------
+ tests/py/inet/udp.t.payload.ip6        | 12 +++------
+ tests/py/inet/udp.t.payload.netdev     | 12 +++------
+ tests/py/inet/udplite.t.payload.inet   |  9 +++----
+ tests/py/inet/udplite.t.payload.ip     |  9 +++----
+ tests/py/inet/udplite.t.payload.ip6    |  9 +++----
+ tests/py/inet/udplite.t.payload.netdev |  9 +++----
+ tests/py/ip/dnat.t.payload.ip          |  6 ++---
+ tests/py/ip/icmp.t.payload.ip          | 18 +++++--------
+ tests/py/ip/ip.t.payload               | 24 ++++++------------
+ tests/py/ip/ip.t.payload.inet          | 24 ++++++------------
+ tests/py/ip/ip.t.payload.netdev        | 24 ++++++------------
+ tests/py/ip/snat.t.payload             |  6 ++---
+ tests/py/ip6/dst.t.payload.inet        |  6 ++---
+ tests/py/ip6/dst.t.payload.ip6         |  6 ++---
+ tests/py/ip6/frag.t.payload.inet       |  9 +++----
+ tests/py/ip6/frag.t.payload.ip6        |  9 +++----
+ tests/py/ip6/hbh.t.payload.inet        |  6 ++---
+ tests/py/ip6/hbh.t.payload.ip6         |  6 ++---
+ tests/py/ip6/icmpv6.t.payload.ip6      |  9 +++----
+ tests/py/ip6/ip6.t.payload.inet        | 12 +++------
+ tests/py/ip6/ip6.t.payload.ip6         | 12 +++------
+ tests/py/ip6/mh.t.payload.inet         | 12 +++------
+ tests/py/ip6/mh.t.payload.ip6          | 12 +++------
+ tests/py/ip6/rt.t.payload.inet         | 12 +++------
+ tests/py/ip6/rt.t.payload.ip6          | 12 +++------
+ 58 files changed, 292 insertions(+), 419 deletions(-)
+
+diff --git a/include/linux/netfilter/nf_tables.h b/include/linux/netfilter/nf_tables.h
+index eeffde1..0df2ccc 100644
+--- a/include/linux/netfilter/nf_tables.h
++++ b/include/linux/netfilter/nf_tables.h
+@@ -542,6 +542,35 @@ enum nft_cmp_attributes {
+ #define NFTA_CMP_MAX		(__NFTA_CMP_MAX - 1)
+ 
+ /**
++ * enum nft_range_ops - nf_tables range operator
++ *
++ * @NFT_RANGE_EQ: equal
++ * @NFT_RANGE_NEQ: not equal
++ */
++enum nft_range_ops {
++	NFT_RANGE_EQ,
++	NFT_RANGE_NEQ,
++};
++
++/**
++ * enum nft_range_attributes - nf_tables range expression netlink attributes
++ *
++ * @NFTA_RANGE_SREG: source register of data to compare (NLA_U32: nft_registers)
++ * @NFTA_RANGE_OP: cmp operation (NLA_U32: nft_cmp_ops)
++ * @NFTA_RANGE_FROM_DATA: data range from (NLA_NESTED: nft_data_attributes)
++ * @NFTA_RANGE_TO_DATA: data range to (NLA_NESTED: nft_data_attributes)
++ */
++enum nft_range_attributes {
++	NFTA_RANGE_UNSPEC,
++	NFTA_RANGE_SREG,
++	NFTA_RANGE_OP,
++	NFTA_RANGE_FROM_DATA,
++	NFTA_RANGE_TO_DATA,
++	__NFTA_RANGE_MAX
++};
++#define NFTA_RANGE_MAX         (__NFTA_RANGE_MAX - 1)
++
++/**
+  * enum nft_lookup_attributes - nf_tables set lookup expression netlink attributes
+  *
+  * @NFTA_LOOKUP_SET: name of the set where to look for (NLA_STRING)
+diff --git a/src/netlink_delinearize.c b/src/netlink_delinearize.c
+index 9e26078..c3f0773 100644
+--- a/src/netlink_delinearize.c
++++ b/src/netlink_delinearize.c
+@@ -193,6 +193,46 @@ static void netlink_parse_immediate(struct netlink_parse_ctx *ctx,
+ 		netlink_set_register(ctx, dreg, expr);
+ }
+ 
++static enum ops netlink_parse_range_op(const struct nftnl_expr *nle)
++{
++	switch (nftnl_expr_get_u32(nle, NFTNL_EXPR_RANGE_OP)) {
++	case NFT_RANGE_EQ:
++		return OP_EQ;
++	case NFT_RANGE_NEQ:
++		return OP_NEQ;
++	default:
++		return OP_INVALID;
++	}
++}
++
++static void netlink_parse_range(struct netlink_parse_ctx *ctx,
++				const struct location *loc,
++				const struct nftnl_expr *nle)
++{
++	struct expr *expr, *left, *right, *from, *to;
++	struct nft_data_delinearize nld;
++	enum nft_registers sreg;
++	enum ops op;
++
++	sreg = netlink_parse_register(nle, NFTNL_EXPR_RANGE_SREG);
++	left = netlink_get_register(ctx, loc, sreg);
++	if (left == NULL)
++		return netlink_error(ctx, loc,
++				     "Relational expression has no left hand side");
++
++	op = netlink_parse_range_op(nle);
++
++	nld.value = nftnl_expr_get(nle, NFTNL_EXPR_RANGE_FROM_DATA, &nld.len);
++	from = netlink_alloc_value(loc, &nld);
++
++	nld.value = nftnl_expr_get(nle, NFTNL_EXPR_RANGE_TO_DATA, &nld.len);
++	to = netlink_alloc_value(loc, &nld);
++
++	right = range_expr_alloc(loc, from, to);
++	expr = relational_expr_alloc(loc, op, left, right);
++	ctx->stmt = expr_stmt_alloc(loc, expr);
++}
++
+ static enum ops netlink_parse_cmp_op(const struct nftnl_expr *nle)
+ {
+ 	switch (nftnl_expr_get_u32(nle, NFTNL_EXPR_CMP_OP)) {
+@@ -986,6 +1026,7 @@ static const struct {
+ 	{ .name = "counter",	.parse = netlink_parse_counter },
+ 	{ .name = "log",	.parse = netlink_parse_log },
+ 	{ .name = "limit",	.parse = netlink_parse_limit },
++	{ .name = "range",	.parse = netlink_parse_range },
+ 	{ .name = "reject",	.parse = netlink_parse_reject },
+ 	{ .name = "nat",	.parse = netlink_parse_nat },
+ 	{ .name = "masq",	.parse = netlink_parse_masq },
+@@ -1303,6 +1344,10 @@ static void binop_adjust(struct expr *expr, unsigned int shift)
+ 			}
+ 		}
+ 		break;
++	case EXPR_RANGE:
++		binop_adjust_one(binop, right->left, shift);
++		binop_adjust_one(binop, right->right, shift);
++		break;
+ 	default:
+ 		BUG("unknown expression type %s\n", expr->ops->name);
+ 		break;
+diff --git a/src/netlink_linearize.c b/src/netlink_linearize.c
+index 98c22d8..ffc3f57 100644
+--- a/src/netlink_linearize.c
++++ b/src/netlink_linearize.c
+@@ -334,45 +334,41 @@ static void netlink_gen_range(struct netlink_linearize_ctx *ctx,
+ 	sreg = get_register(ctx, expr->left);
+ 	netlink_gen_expr(ctx, expr->left, sreg);
+ 
+-	nle = alloc_nft_expr("cmp");
+-	netlink_put_register(nle, NFTNL_EXPR_CMP_SREG, sreg);
+ 	switch (expr->op) {
+ 	case OP_NEQ:
+-		nftnl_expr_set_u32(nle, NFTNL_EXPR_CMP_OP,
+-				   netlink_gen_cmp_op(OP_LT));
++		nle = alloc_nft_expr("range");
++		netlink_put_register(nle, NFTNL_EXPR_RANGE_SREG, sreg);
++		nftnl_expr_set_u32(nle, NFTNL_EXPR_RANGE_OP, NFT_RANGE_NEQ);
++		netlink_gen_data(range->left, &nld);
++		nftnl_expr_set(nle, NFTNL_EXPR_RANGE_FROM_DATA,
++			       nld.value, nld.len);
++		netlink_gen_data(range->right, &nld);
++		nftnl_expr_set(nle, NFTNL_EXPR_RANGE_TO_DATA,
++			       nld.value, nld.len);
++		nftnl_rule_add_expr(ctx->nlr, nle);
+ 		break;
+ 	case OP_RANGE:
+ 	case OP_EQ:
++		nle = alloc_nft_expr("cmp");
++		netlink_put_register(nle, NFTNL_EXPR_CMP_SREG, sreg);
+ 		nftnl_expr_set_u32(nle, NFTNL_EXPR_CMP_OP,
+ 				   netlink_gen_cmp_op(OP_GTE));
+-		break;
+-	default:
+-		BUG("invalid range operation %u\n", expr->op);
+-	}
+-
+-	netlink_gen_data(range->left, &nld);
+-	nftnl_expr_set(nle, NFTNL_EXPR_CMP_DATA, nld.value, nld.len);
+-	nftnl_rule_add_expr(ctx->nlr, nle);
++		netlink_gen_data(range->left, &nld);
++		nftnl_expr_set(nle, NFTNL_EXPR_CMP_DATA, nld.value, nld.len);
++		nftnl_rule_add_expr(ctx->nlr, nle);
+ 
+-	nle = alloc_nft_expr("cmp");
+-	netlink_put_register(nle, NFTNL_EXPR_CMP_SREG, sreg);
+-	switch (expr->op) {
+-	case OP_NEQ:
+-		nftnl_expr_set_u32(nle, NFTNL_EXPR_CMP_OP,
+-				   netlink_gen_cmp_op(OP_GT));
+-		break;
+-	case OP_RANGE:
+-	case OP_EQ:
++		nle = alloc_nft_expr("cmp");
++		netlink_put_register(nle, NFTNL_EXPR_CMP_SREG, sreg);
+ 		nftnl_expr_set_u32(nle, NFTNL_EXPR_CMP_OP,
+ 				   netlink_gen_cmp_op(OP_LTE));
++		netlink_gen_data(range->right, &nld);
++		nftnl_expr_set(nle, NFTNL_EXPR_CMP_DATA, nld.value, nld.len);
++		nftnl_rule_add_expr(ctx->nlr, nle);
+ 		break;
+ 	default:
+ 		BUG("invalid range operation %u\n", expr->op);
+-	}
+ 
+-	netlink_gen_data(range->right, &nld);
+-	nftnl_expr_set(nle, NFTNL_EXPR_CMP_DATA, nld.value, nld.len);
+-	nftnl_rule_add_expr(ctx->nlr, nle);
++	}
+ 
+ 	release_register(ctx, expr->left);
+ }
+diff --git a/tests/py/any/ct.t.payload b/tests/py/any/ct.t.payload
+index 7ed3338..26bcf26 100644
+--- a/tests/py/any/ct.t.payload
++++ b/tests/py/any/ct.t.payload
+@@ -155,8 +155,7 @@ ip test-ip4 output
+ ip test-ip4 output
+   [ ct load mark => reg 1 ]
+   [ byteorder reg 1 = hton(reg 1, 4, 4) ]
+-  [ cmp lt reg 1 0x32000000 ]
+-  [ cmp gt reg 1 0x45000000 ]
++  [ range neq reg 1 0x32000000 0x45000000 ]
+ 
+ # ct mark {0x32, 0x2222, 0x42de3}
+ __set%d test-ip4 3
+@@ -221,8 +220,7 @@ ip test-ip4 output
+ ip test-ip4 output
+   [ ct load expiration => reg 1 ]
+   [ byteorder reg 1 = hton(reg 1, 4, 4) ]
+-  [ cmp lt reg 1 0x21000000 ]
+-  [ cmp gt reg 1 0x2d000000 ]
++  [ range neq reg 1 0x21000000 0x2d000000 ]
+ 
+ # ct expiration {33, 55, 67, 88}
+ __set%d test-ip4 3
+diff --git a/tests/py/any/meta.t.payload b/tests/py/any/meta.t.payload
+index d584873..00a2f20 100644
+--- a/tests/py/any/meta.t.payload
++++ b/tests/py/any/meta.t.payload
+@@ -24,8 +24,7 @@ ip test-ip4 input
+ ip test-ip4 input
+   [ meta load len => reg 1 ]
+   [ byteorder reg 1 = hton(reg 1, 4, 4) ]
+-  [ cmp lt reg 1 0x21000000 ]
+-  [ cmp gt reg 1 0x2d000000 ]
++  [ range neq reg 1 0x21000000 0x2d000000 ]
+ 
+ # meta length { 33, 55, 67, 88}
+ __set%d test-ip4 3
+@@ -119,8 +118,7 @@ ip test-ip4 input
+ ip test-ip4 input
+   [ meta load l4proto => reg 1 ]
+   [ byteorder reg 1 = hton(reg 1, 2, 1) ]
+-  [ cmp lt reg 1 0x00000021 ]
+-  [ cmp gt reg 1 0x0000002d ]
++  [ range neq reg 1 0x00000021 0x0000002d ]
+ 
+ # meta l4proto { 33, 55, 67, 88}
+ __set%d test-ip4 3
+@@ -391,8 +389,7 @@ ip test-ip4 input
+ ip test-ip4 input
+   [ meta load skuid => reg 1 ]
+   [ byteorder reg 1 = hton(reg 1, 4, 4) ]
+-  [ cmp lt reg 1 0xd1070000 ]
+-  [ cmp gt reg 1 0xd5070000 ]
++  [ range neq reg 1 0xd1070000 0xd5070000 ]
+   [ immediate reg 0 accept ]
+ 
+ # meta skuid { 2001-2005} accept
+@@ -456,8 +453,7 @@ ip test-ip4 input
+ ip test-ip4 input
+   [ meta load skgid => reg 1 ]
+   [ byteorder reg 1 = hton(reg 1, 4, 4) ]
+-  [ cmp lt reg 1 0xd1070000 ]
+-  [ cmp gt reg 1 0xd5070000 ]
++  [ range neq reg 1 0xd1070000 0xd5070000 ]
+   [ immediate reg 0 accept ]
+ 
+ # meta skgid { 2001-2005} accept
+@@ -601,8 +597,7 @@ ip test-ip4 input
+ ip test-ip4 input
+   [ meta load cpu => reg 1 ]
+   [ byteorder reg 1 = hton(reg 1, 4, 4) ]
+-  [ cmp lt reg 1 0x01000000 ]
+-  [ cmp gt reg 1 0x02000000 ]
++  [ range neq reg 1 0x01000000 0x02000000 ]
+ 
+ # meta cpu { 2,3}
+ __set%d test-ip4 3
+@@ -740,8 +735,7 @@ ip test-ip4 input
+ ip test-ip4 input
+   [ meta load cgroup => reg 1 ]
+   [ byteorder reg 1 = hton(reg 1, 4, 4) ]
+-  [ cmp lt reg 1 0x01001000 ]
+-  [ cmp gt reg 1 0x02001000 ]
++  [ range neq reg 1 0x01001000 0x02001000 ]
+ 
+ # meta cgroup {1048577-1048578}
+ __set%d test-ip4 7
+diff --git a/tests/py/arp/arp.t.payload b/tests/py/arp/arp.t.payload
+index 31c3024..5b8f8d5 100644
+--- a/tests/py/arp/arp.t.payload
++++ b/tests/py/arp/arp.t.payload
+@@ -27,8 +27,7 @@ arp test-arp input
+ # arp htype != 33-45
+ arp test-arp input
+   [ payload load 2b @ network header + 0 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # arp htype { 33, 55, 67, 88}
+ __set%d test-arp 3
+@@ -70,8 +69,7 @@ arp test-arp input
+ # arp hlen != 33-45
+ arp test-arp input
+   [ payload load 1b @ network header + 4 => reg 1 ]
+-  [ cmp lt reg 1 0x00000021 ]
+-  [ cmp gt reg 1 0x0000002d ]
++  [ range neq reg 1 0x00000021 0x0000002d ]
+ 
+ # arp hlen { 33, 55, 67, 88}
+ __set%d test-arp 3
+@@ -108,8 +106,7 @@ arp test-arp input
+ # arp plen != 33-45
+ arp test-arp input
+   [ payload load 1b @ network header + 5 => reg 1 ]
+-  [ cmp lt reg 1 0x00000021 ]
+-  [ cmp gt reg 1 0x0000002d ]
++  [ range neq reg 1 0x00000021 0x0000002d ]
+ 
+ # arp plen { 33, 55, 67, 88}
+ __set%d test-arp 3
+diff --git a/tests/py/arp/arp.t.payload.netdev b/tests/py/arp/arp.t.payload.netdev
+index a64ebea..5188ed7 100644
+--- a/tests/py/arp/arp.t.payload.netdev
++++ b/tests/py/arp/arp.t.payload.netdev
+@@ -39,8 +39,7 @@ netdev test-netdev ingress
+   [ meta load protocol => reg 1 ]
+   [ cmp eq reg 1 0x00000608 ]
+   [ payload load 2b @ network header + 0 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # arp htype { 33, 55, 67, 88}
+ __set%d test-netdev 3
+@@ -96,8 +95,7 @@ netdev test-netdev ingress
+   [ meta load protocol => reg 1 ]
+   [ cmp eq reg 1 0x00000608 ]
+   [ payload load 1b @ network header + 4 => reg 1 ]
+-  [ cmp lt reg 1 0x00000021 ]
+-  [ cmp gt reg 1 0x0000002d ]
++  [ range neq reg 1 0x00000021 0x0000002d ]
+ 
+ # arp hlen { 33, 55, 67, 88}
+ __set%d test-netdev 3
+@@ -146,8 +144,7 @@ netdev test-netdev ingress
+   [ meta load protocol => reg 1 ]
+   [ cmp eq reg 1 0x00000608 ]
+   [ payload load 1b @ network header + 5 => reg 1 ]
+-  [ cmp lt reg 1 0x00000021 ]
+-  [ cmp gt reg 1 0x0000002d ]
++  [ range neq reg 1 0x00000021 0x0000002d ]
+ 
+ # arp plen { 33, 55, 67, 88}
+ __set%d test-netdev 3
+diff --git a/tests/py/inet/ah.t.payload.inet b/tests/py/inet/ah.t.payload.inet
+index 739386a..1e56797 100644
+--- a/tests/py/inet/ah.t.payload.inet
++++ b/tests/py/inet/ah.t.payload.inet
+@@ -11,8 +11,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000033 ]
+   [ payload load 1b @ transport header + 1 => reg 1 ]
+-  [ cmp lt reg 1 0x0000000b ]
+-  [ cmp gt reg 1 0x00000017 ]
++  [ range neq reg 1 0x0000000b 0x00000017 ]
+ 
+ # ah hdrlength { 11-23}
+ __set%d test-inet 7
+@@ -61,8 +60,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000033 ]
+   [ payload load 2b @ transport header + 2 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # ah reserved {23, 100}
+ __set%d test-inet 3
+@@ -111,8 +109,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000033 ]
+   [ payload load 4b @ transport header + 4 => reg 1 ]
+-  [ cmp lt reg 1 0x6f000000 ]
+-  [ cmp gt reg 1 0xde000000 ]
++  [ range neq reg 1 0x6f000000 0xde000000 ]
+ 
+ # ah spi {111, 122}
+ __set%d test-inet 3
+@@ -181,6 +178,5 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000033 ]
+   [ payload load 4b @ transport header + 8 => reg 1 ]
+-  [ cmp lt reg 1 0x17000000 ]
+-  [ cmp gt reg 1 0x21000000 ]
++  [ range neq reg 1 0x17000000 0x21000000 ]
+ 
+diff --git a/tests/py/inet/ah.t.payload.ip b/tests/py/inet/ah.t.payload.ip
+index b989948..5ad0041 100644
+--- a/tests/py/inet/ah.t.payload.ip
++++ b/tests/py/inet/ah.t.payload.ip
+@@ -11,8 +11,7 @@ ip test-ip4 input
+   [ payload load 1b @ network header + 9 => reg 1 ]
+   [ cmp eq reg 1 0x00000033 ]
+   [ payload load 1b @ transport header + 1 => reg 1 ]
+-  [ cmp lt reg 1 0x0000000b ]
+-  [ cmp gt reg 1 0x00000017 ]
++  [ range neq reg 1 0x0000000b 0x00000017 ]
+ 
+ # ah hdrlength { 11-23}
+ __set%d test-ip4 7
+@@ -61,8 +60,7 @@ ip test-ip4 input
+   [ payload load 1b @ network header + 9 => reg 1 ]
+   [ cmp eq reg 1 0x00000033 ]
+   [ payload load 2b @ transport header + 2 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # ah reserved {23, 100}
+ __set%d test-ip4 3
+@@ -111,8 +109,7 @@ ip test-ip4 input
+   [ payload load 1b @ network header + 9 => reg 1 ]
+   [ cmp eq reg 1 0x00000033 ]
+   [ payload load 4b @ transport header + 4 => reg 1 ]
+-  [ cmp lt reg 1 0x6f000000 ]
+-  [ cmp gt reg 1 0xde000000 ]
++  [ range neq reg 1 0x6f000000 0xde000000 ]
+ 
+ # ah spi {111, 122}
+ __set%d test-ip4 3
+@@ -181,6 +178,5 @@ ip test-ip4 input
+   [ payload load 1b @ network header + 9 => reg 1 ]
+   [ cmp eq reg 1 0x00000033 ]
+   [ payload load 4b @ transport header + 8 => reg 1 ]
+-  [ cmp lt reg 1 0x17000000 ]
+-  [ cmp gt reg 1 0x21000000 ]
++  [ range neq reg 1 0x17000000 0x21000000 ]
+ 
+diff --git a/tests/py/inet/ah.t.payload.ip6 b/tests/py/inet/ah.t.payload.ip6
+index 95eae66..c57a28a 100644
+--- a/tests/py/inet/ah.t.payload.ip6
++++ b/tests/py/inet/ah.t.payload.ip6
+@@ -11,8 +11,7 @@ ip6 test-ip6 input
+   [ payload load 1b @ network header + 6 => reg 1 ]
+   [ cmp eq reg 1 0x00000033 ]
+   [ payload load 1b @ transport header + 1 => reg 1 ]
+-  [ cmp lt reg 1 0x0000000b ]
+-  [ cmp gt reg 1 0x00000017 ]
++  [ range neq reg 1 0x0000000b 0x00000017 ]
+ 
+ # ah hdrlength { 11-23}
+ __set%d test-ip6 7
+@@ -61,8 +60,7 @@ ip6 test-ip6 input
+   [ payload load 1b @ network header + 6 => reg 1 ]
+   [ cmp eq reg 1 0x00000033 ]
+   [ payload load 2b @ transport header + 2 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # ah reserved {23, 100}
+ __set%d test-ip6 3
+@@ -111,8 +109,7 @@ ip6 test-ip6 input
+   [ payload load 1b @ network header + 6 => reg 1 ]
+   [ cmp eq reg 1 0x00000033 ]
+   [ payload load 4b @ transport header + 4 => reg 1 ]
+-  [ cmp lt reg 1 0x6f000000 ]
+-  [ cmp gt reg 1 0xde000000 ]
++  [ range neq reg 1 0x6f000000 0xde000000 ]
+ 
+ # ah spi {111, 122}
+ __set%d test-ip6 3
+@@ -181,6 +178,5 @@ ip6 test-ip6 input
+   [ payload load 1b @ network header + 6 => reg 1 ]
+   [ cmp eq reg 1 0x00000033 ]
+   [ payload load 4b @ transport header + 8 => reg 1 ]
+-  [ cmp lt reg 1 0x17000000 ]
+-  [ cmp gt reg 1 0x21000000 ]
++  [ range neq reg 1 0x17000000 0x21000000 ]
+ 
+diff --git a/tests/py/inet/ah.t.payload.netdev b/tests/py/inet/ah.t.payload.netdev
+index 55eea13..e06811d 100644
+--- a/tests/py/inet/ah.t.payload.netdev
++++ b/tests/py/inet/ah.t.payload.netdev
+@@ -11,8 +11,7 @@ netdev test-netdev ingress
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000033 ]
+   [ payload load 1b @ transport header + 1 => reg 1 ]
+-  [ cmp lt reg 1 0x0000000b ]
+-  [ cmp gt reg 1 0x00000017 ]
++  [ range neq reg 1 0x0000000b 0x00000017 ]
+ 
+ # ah hdrlength { 11-23}
+ __set%d test-netdev 7
+@@ -61,8 +60,7 @@ netdev test-netdev ingress
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000033 ]
+   [ payload load 2b @ transport header + 2 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # ah reserved {23, 100}
+ __set%d test-netdev 3
+@@ -111,8 +109,7 @@ netdev test-netdev ingress
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000033 ]
+   [ payload load 4b @ transport header + 4 => reg 1 ]
+-  [ cmp lt reg 1 0x6f000000 ]
+-  [ cmp gt reg 1 0xde000000 ]
++  [ range neq reg 1 0x6f000000 0xde000000 ]
+ 
+ # ah spi {111, 122}
+ __set%d test-netdev 3
+@@ -181,6 +178,5 @@ netdev test-netdev ingress
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000033 ]
+   [ payload load 4b @ transport header + 8 => reg 1 ]
+-  [ cmp lt reg 1 0x17000000 ]
+-  [ cmp gt reg 1 0x21000000 ]
++  [ range neq reg 1 0x17000000 0x21000000 ]
+ 
+diff --git a/tests/py/inet/comp.t.payload.inet b/tests/py/inet/comp.t.payload.inet
+index eff32b7..cdeba2b 100644
+--- a/tests/py/inet/comp.t.payload.inet
++++ b/tests/py/inet/comp.t.payload.inet
+@@ -32,8 +32,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x0000006c ]
+   [ payload load 1b @ transport header + 1 => reg 1 ]
+-  [ cmp lt reg 1 0x00000033 ]
+-  [ cmp gt reg 1 0x00000045 ]
++  [ range neq reg 1 0x00000033 0x00000045 ]
+ 
+ # comp flags {0x33, 0x55, 0x67, 0x88}
+ __set%d test-inet 3
+@@ -82,8 +81,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x0000006c ]
+   [ payload load 2b @ transport header + 2 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # comp cpi {33, 55, 67, 88}
+ __set%d test-inet 3
+diff --git a/tests/py/inet/comp.t.payload.ip b/tests/py/inet/comp.t.payload.ip
+index b2a8ab4..9da8f94 100644
+--- a/tests/py/inet/comp.t.payload.ip
++++ b/tests/py/inet/comp.t.payload.ip
+@@ -32,8 +32,7 @@ ip test-ip4 input
+   [ payload load 1b @ network header + 9 => reg 1 ]
+   [ cmp eq reg 1 0x0000006c ]
+   [ payload load 1b @ transport header + 1 => reg 1 ]
+-  [ cmp lt reg 1 0x00000033 ]
+-  [ cmp gt reg 1 0x00000045 ]
++  [ range neq reg 1 0x00000033 0x00000045 ]
+ 
+ # comp flags {0x33, 0x55, 0x67, 0x88}
+ __set%d test-ip4 3
+@@ -82,8 +81,7 @@ ip test-ip4 input
+   [ payload load 1b @ network header + 9 => reg 1 ]
+   [ cmp eq reg 1 0x0000006c ]
+   [ payload load 2b @ transport header + 2 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # comp cpi {33, 55, 67, 88}
+ __set%d test-ip4 3
+diff --git a/tests/py/inet/comp.t.payload.ip6 b/tests/py/inet/comp.t.payload.ip6
+index f179998..69a13ed 100644
+--- a/tests/py/inet/comp.t.payload.ip6
++++ b/tests/py/inet/comp.t.payload.ip6
+@@ -32,8 +32,7 @@ ip6 test-ip6 input
+   [ payload load 1b @ network header + 6 => reg 1 ]
+   [ cmp eq reg 1 0x0000006c ]
+   [ payload load 1b @ transport header + 1 => reg 1 ]
+-  [ cmp lt reg 1 0x00000033 ]
+-  [ cmp gt reg 1 0x00000045 ]
++  [ range neq reg 1 0x00000033 0x00000045 ]
+ 
+ # comp flags {0x33, 0x55, 0x67, 0x88}
+ __set%d test-ip6 3
+@@ -82,8 +81,7 @@ ip6 test-ip6 input
+   [ payload load 1b @ network header + 6 => reg 1 ]
+   [ cmp eq reg 1 0x0000006c ]
+   [ payload load 2b @ transport header + 2 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # comp cpi {33, 55, 67, 88}
+ __set%d test-ip6 3
+diff --git a/tests/py/inet/comp.t.payload.netdev b/tests/py/inet/comp.t.payload.netdev
+index eff32b7..cdeba2b 100644
+--- a/tests/py/inet/comp.t.payload.netdev
++++ b/tests/py/inet/comp.t.payload.netdev
+@@ -32,8 +32,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x0000006c ]
+   [ payload load 1b @ transport header + 1 => reg 1 ]
+-  [ cmp lt reg 1 0x00000033 ]
+-  [ cmp gt reg 1 0x00000045 ]
++  [ range neq reg 1 0x00000033 0x00000045 ]
+ 
+ # comp flags {0x33, 0x55, 0x67, 0x88}
+ __set%d test-inet 3
+@@ -82,8 +81,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x0000006c ]
+   [ payload load 2b @ transport header + 2 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # comp cpi {33, 55, 67, 88}
+ __set%d test-inet 3
+diff --git a/tests/py/inet/dccp.t.payload.inet b/tests/py/inet/dccp.t.payload.inet
+index f5aacf6..ccba6d0 100644
+--- a/tests/py/inet/dccp.t.payload.inet
++++ b/tests/py/inet/dccp.t.payload.inet
+@@ -11,8 +11,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000021 ]
+   [ payload load 2b @ transport header + 0 => reg 1 ]
+-  [ cmp lt reg 1 0x00001500 ]
+-  [ cmp gt reg 1 0x00002300 ]
++  [ range neq reg 1 0x00001500 0x00002300 ]
+ 
+ # dccp sport {23, 24, 25}
+ __set%d test-inet 3
+diff --git a/tests/py/inet/dccp.t.payload.ip b/tests/py/inet/dccp.t.payload.ip
+index bda8dfd..a02247f 100644
+--- a/tests/py/inet/dccp.t.payload.ip
++++ b/tests/py/inet/dccp.t.payload.ip
+@@ -11,8 +11,7 @@ ip test-ip4 input
+   [ payload load 1b @ network header + 9 => reg 1 ]
+   [ cmp eq reg 1 0x00000021 ]
+   [ payload load 2b @ transport header + 0 => reg 1 ]
+-  [ cmp lt reg 1 0x00001500 ]
+-  [ cmp gt reg 1 0x00002300 ]
++  [ range neq reg 1 0x00001500 0x00002300 ]
+ 
+ # dccp sport {23, 24, 25}
+ __set%d test-ip4 3
+diff --git a/tests/py/inet/dccp.t.payload.ip6 b/tests/py/inet/dccp.t.payload.ip6
+index f78f983..c81a3a0 100644
+--- a/tests/py/inet/dccp.t.payload.ip6
++++ b/tests/py/inet/dccp.t.payload.ip6
+@@ -11,8 +11,7 @@ ip6 test-ip6 input
+   [ payload load 1b @ network header + 6 => reg 1 ]
+   [ cmp eq reg 1 0x00000021 ]
+   [ payload load 2b @ transport header + 0 => reg 1 ]
+-  [ cmp lt reg 1 0x00001500 ]
+-  [ cmp gt reg 1 0x00002300 ]
++  [ range neq reg 1 0x00001500 0x00002300 ]
+ 
+ # dccp sport {23, 24, 25}
+ __set%d test-ip4 3
+diff --git a/tests/py/inet/dccp.t.payload.netdev b/tests/py/inet/dccp.t.payload.netdev
+index abed6b2..abb1fb9 100644
+--- a/tests/py/inet/dccp.t.payload.netdev
++++ b/tests/py/inet/dccp.t.payload.netdev
+@@ -11,8 +11,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000021 ]
+   [ payload load 2b @ transport header + 0 => reg 1 ]
+-  [ cmp lt reg 1 0x00001500 ]
+-  [ cmp gt reg 1 0x00002300 ]
++  [ range neq reg 1 0x00001500 0x00002300 ]
+ 
+ # dccp sport {23, 24, 25}
+ __set%d test-inet 3
+diff --git a/tests/py/inet/esp.t.payload.inet b/tests/py/inet/esp.t.payload.inet
+index 5f3a0da..d41f766 100644
+--- a/tests/py/inet/esp.t.payload.inet
++++ b/tests/py/inet/esp.t.payload.inet
+@@ -25,8 +25,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000032 ]
+   [ payload load 4b @ transport header + 0 => reg 1 ]
+-  [ cmp lt reg 1 0x6f000000 ]
+-  [ cmp gt reg 1 0xde000000 ]
++  [ range neq reg 1 0x6f000000 0xde000000 ]
+ 
+ # esp spi { 100, 102}
+ __set%d test-inet 3
+@@ -68,8 +67,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000032 ]
+   [ payload load 4b @ transport header + 4 => reg 1 ]
+-  [ cmp lt reg 1 0x16000000 ]
+-  [ cmp gt reg 1 0x18000000 ]
++  [ range neq reg 1 0x16000000 0x18000000 ]
+ 
+ # esp sequence { 22, 24}
+ __set%d test-inet 3
+diff --git a/tests/py/inet/esp.t.payload.ip b/tests/py/inet/esp.t.payload.ip
+index cf52678..5de41ae 100644
+--- a/tests/py/inet/esp.t.payload.ip
++++ b/tests/py/inet/esp.t.payload.ip
+@@ -25,8 +25,7 @@ ip test-ip4 input
+   [ payload load 1b @ network header + 9 => reg 1 ]
+   [ cmp eq reg 1 0x00000032 ]
+   [ payload load 4b @ transport header + 0 => reg 1 ]
+-  [ cmp lt reg 1 0x6f000000 ]
+-  [ cmp gt reg 1 0xde000000 ]
++  [ range neq reg 1 0x6f000000 0xde000000 ]
+ 
+ # esp spi { 100, 102}
+ __set%d test-ip4 3
+@@ -68,8 +67,7 @@ ip test-ip4 input
+   [ payload load 1b @ network header + 9 => reg 1 ]
+   [ cmp eq reg 1 0x00000032 ]
+   [ payload load 4b @ transport header + 4 => reg 1 ]
+-  [ cmp lt reg 1 0x16000000 ]
+-  [ cmp gt reg 1 0x18000000 ]
++  [ range neq reg 1 0x16000000 0x18000000 ]
+ 
+ # esp sequence { 22, 24}
+ __set%d test-ip4 3
+diff --git a/tests/py/inet/esp.t.payload.ip6 b/tests/py/inet/esp.t.payload.ip6
+index 982412d..0bc2e70 100644
+--- a/tests/py/inet/esp.t.payload.ip6
++++ b/tests/py/inet/esp.t.payload.ip6
+@@ -25,8 +25,7 @@ ip6 test-ip6 input
+   [ payload load 1b @ network header + 6 => reg 1 ]
+   [ cmp eq reg 1 0x00000032 ]
+   [ payload load 4b @ transport header + 0 => reg 1 ]
+-  [ cmp lt reg 1 0x6f000000 ]
+-  [ cmp gt reg 1 0xde000000 ]
++  [ range neq reg 1 0x6f000000 0xde000000 ]
+ 
+ # esp spi { 100, 102}
+ __set%d test-ip6 3
+@@ -68,8 +67,7 @@ ip6 test-ip6 input
+   [ payload load 1b @ network header + 6 => reg 1 ]
+   [ cmp eq reg 1 0x00000032 ]
+   [ payload load 4b @ transport header + 4 => reg 1 ]
+-  [ cmp lt reg 1 0x16000000 ]
+-  [ cmp gt reg 1 0x18000000 ]
++  [ range neq reg 1 0x16000000 0x18000000 ]
+ 
+ # esp sequence { 22, 24}
+ __set%d test-ip6 3
+diff --git a/tests/py/inet/esp.t.payload.netdev b/tests/py/inet/esp.t.payload.netdev
+index 5f3a0da..d41f766 100644
+--- a/tests/py/inet/esp.t.payload.netdev
++++ b/tests/py/inet/esp.t.payload.netdev
+@@ -25,8 +25,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000032 ]
+   [ payload load 4b @ transport header + 0 => reg 1 ]
+-  [ cmp lt reg 1 0x6f000000 ]
+-  [ cmp gt reg 1 0xde000000 ]
++  [ range neq reg 1 0x6f000000 0xde000000 ]
+ 
+ # esp spi { 100, 102}
+ __set%d test-inet 3
+@@ -68,8 +67,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000032 ]
+   [ payload load 4b @ transport header + 4 => reg 1 ]
+-  [ cmp lt reg 1 0x16000000 ]
+-  [ cmp gt reg 1 0x18000000 ]
++  [ range neq reg 1 0x16000000 0x18000000 ]
+ 
+ # esp sequence { 22, 24}
+ __set%d test-inet 3
+diff --git a/tests/py/inet/sctp.t.payload.inet b/tests/py/inet/sctp.t.payload.inet
+index 9c68a8c..bc7fe7c 100644
+--- a/tests/py/inet/sctp.t.payload.inet
++++ b/tests/py/inet/sctp.t.payload.inet
+@@ -25,8 +25,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000084 ]
+   [ payload load 2b @ transport header + 0 => reg 1 ]
+-  [ cmp lt reg 1 0x00001700 ]
+-  [ cmp gt reg 1 0x00002c00 ]
++  [ range neq reg 1 0x00001700 0x00002c00 ]
+ 
+ # sctp sport { 23, 24, 25}
+ __set%d test-inet 3
+@@ -75,8 +74,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000084 ]
+   [ payload load 2b @ transport header + 2 => reg 1 ]
+-  [ cmp lt reg 1 0x00001700 ]
+-  [ cmp gt reg 1 0x00002c00 ]
++  [ range neq reg 1 0x00001700 0x00002c00 ]
+ 
+ # sctp dport { 23, 24, 25}
+ __set%d test-inet 3
+@@ -125,8 +123,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000084 ]
+   [ payload load 4b @ transport header + 8 => reg 1 ]
+-  [ cmp lt reg 1 0x20000000 ]
+-  [ cmp gt reg 1 0x6f000000 ]
++  [ range neq reg 1 0x20000000 0x6f000000 ]
+ 
+ # sctp checksum { 22, 33, 44}
+ __set%d test-inet 3
+@@ -175,8 +172,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000084 ]
+   [ payload load 4b @ transport header + 4 => reg 1 ]
+-  [ cmp lt reg 1 0x21000000 ]
+-  [ cmp gt reg 1 0x2d000000 ]
++  [ range neq reg 1 0x21000000 0x2d000000 ]
+ 
+ # sctp vtag {33, 55, 67, 88}
+ __set%d test-inet 3
+diff --git a/tests/py/inet/sctp.t.payload.ip b/tests/py/inet/sctp.t.payload.ip
+index 6e07a4c..fa6ea43 100644
+--- a/tests/py/inet/sctp.t.payload.ip
++++ b/tests/py/inet/sctp.t.payload.ip
+@@ -25,8 +25,7 @@ ip test-ip4 input
+   [ payload load 1b @ network header + 9 => reg 1 ]
+   [ cmp eq reg 1 0x00000084 ]
+   [ payload load 2b @ transport header + 0 => reg 1 ]
+-  [ cmp lt reg 1 0x00001700 ]
+-  [ cmp gt reg 1 0x00002c00 ]
++  [ range neq reg 1 0x00001700 0x00002c00 ]
+ 
+ # sctp sport { 23, 24, 25}
+ __set%d test-ip4 3
+@@ -75,8 +74,7 @@ ip test-ip4 input
+   [ payload load 1b @ network header + 9 => reg 1 ]
+   [ cmp eq reg 1 0x00000084 ]
+   [ payload load 2b @ transport header + 2 => reg 1 ]
+-  [ cmp lt reg 1 0x00001700 ]
+-  [ cmp gt reg 1 0x00002c00 ]
++  [ range neq reg 1 0x00001700 0x00002c00 ]
+ 
+ # sctp dport { 23, 24, 25}
+ __set%d test-ip4 3
+@@ -125,8 +123,7 @@ ip test-ip4 input
+   [ payload load 1b @ network header + 9 => reg 1 ]
+   [ cmp eq reg 1 0x00000084 ]
+   [ payload load 4b @ transport header + 8 => reg 1 ]
+-  [ cmp lt reg 1 0x20000000 ]
+-  [ cmp gt reg 1 0x6f000000 ]
++  [ range neq reg 1 0x20000000 0x6f000000 ]
+ 
+ # sctp checksum { 22, 33, 44}
+ __set%d test-ip4 3
+@@ -175,8 +172,7 @@ ip test-ip4 input
+   [ payload load 1b @ network header + 9 => reg 1 ]
+   [ cmp eq reg 1 0x00000084 ]
+   [ payload load 4b @ transport header + 4 => reg 1 ]
+-  [ cmp lt reg 1 0x21000000 ]
+-  [ cmp gt reg 1 0x2d000000 ]
++  [ range neq reg 1 0x21000000 0x2d000000 ]
+ 
+ # sctp vtag {33, 55, 67, 88}
+ __set%d test-ip4 3
+diff --git a/tests/py/inet/sctp.t.payload.ip6 b/tests/py/inet/sctp.t.payload.ip6
+index 579609b..5d11369 100644
+--- a/tests/py/inet/sctp.t.payload.ip6
++++ b/tests/py/inet/sctp.t.payload.ip6
+@@ -25,8 +25,7 @@ ip6 test-ip6 input
+   [ payload load 1b @ network header + 6 => reg 1 ]
+   [ cmp eq reg 1 0x00000084 ]
+   [ payload load 2b @ transport header + 0 => reg 1 ]
+-  [ cmp lt reg 1 0x00001700 ]
+-  [ cmp gt reg 1 0x00002c00 ]
++  [ range neq reg 1 0x00001700 0x00002c00 ]
+ 
+ # sctp sport { 23, 24, 25}
+ __set%d test-ip6 3
+@@ -75,8 +74,7 @@ ip6 test-ip6 input
+   [ payload load 1b @ network header + 6 => reg 1 ]
+   [ cmp eq reg 1 0x00000084 ]
+   [ payload load 2b @ transport header + 2 => reg 1 ]
+-  [ cmp lt reg 1 0x00001700 ]
+-  [ cmp gt reg 1 0x00002c00 ]
++  [ range neq reg 1 0x00001700 0x00002c00 ]
+ 
+ # sctp dport { 23, 24, 25}
+ __set%d test-ip6 3
+@@ -125,8 +123,7 @@ ip6 test-ip6 input
+   [ payload load 1b @ network header + 6 => reg 1 ]
+   [ cmp eq reg 1 0x00000084 ]
+   [ payload load 4b @ transport header + 8 => reg 1 ]
+-  [ cmp lt reg 1 0x20000000 ]
+-  [ cmp gt reg 1 0x6f000000 ]
++  [ range neq reg 1 0x20000000 0x6f000000 ]
+ 
+ # sctp checksum { 22, 33, 44}
+ __set%d test-ip6 3
+@@ -175,8 +172,7 @@ ip6 test-ip6 input
+   [ payload load 1b @ network header + 6 => reg 1 ]
+   [ cmp eq reg 1 0x00000084 ]
+   [ payload load 4b @ transport header + 4 => reg 1 ]
+-  [ cmp lt reg 1 0x21000000 ]
+-  [ cmp gt reg 1 0x2d000000 ]
++  [ range neq reg 1 0x21000000 0x2d000000 ]
+ 
+ # sctp vtag {33, 55, 67, 88}
+ __set%d test-ip6 3
+diff --git a/tests/py/inet/sctp.t.payload.netdev b/tests/py/inet/sctp.t.payload.netdev
+index 9c68a8c..bc7fe7c 100644
+--- a/tests/py/inet/sctp.t.payload.netdev
++++ b/tests/py/inet/sctp.t.payload.netdev
+@@ -25,8 +25,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000084 ]
+   [ payload load 2b @ transport header + 0 => reg 1 ]
+-  [ cmp lt reg 1 0x00001700 ]
+-  [ cmp gt reg 1 0x00002c00 ]
++  [ range neq reg 1 0x00001700 0x00002c00 ]
+ 
+ # sctp sport { 23, 24, 25}
+ __set%d test-inet 3
+@@ -75,8 +74,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000084 ]
+   [ payload load 2b @ transport header + 2 => reg 1 ]
+-  [ cmp lt reg 1 0x00001700 ]
+-  [ cmp gt reg 1 0x00002c00 ]
++  [ range neq reg 1 0x00001700 0x00002c00 ]
+ 
+ # sctp dport { 23, 24, 25}
+ __set%d test-inet 3
+@@ -125,8 +123,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000084 ]
+   [ payload load 4b @ transport header + 8 => reg 1 ]
+-  [ cmp lt reg 1 0x20000000 ]
+-  [ cmp gt reg 1 0x6f000000 ]
++  [ range neq reg 1 0x20000000 0x6f000000 ]
+ 
+ # sctp checksum { 22, 33, 44}
+ __set%d test-inet 3
+@@ -175,8 +172,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000084 ]
+   [ payload load 4b @ transport header + 4 => reg 1 ]
+-  [ cmp lt reg 1 0x21000000 ]
+-  [ cmp gt reg 1 0x2d000000 ]
++  [ range neq reg 1 0x21000000 0x2d000000 ]
+ 
+ # sctp vtag {33, 55, 67, 88}
+ __set%d test-inet 3
+diff --git a/tests/py/inet/tcp.t.payload.inet b/tests/py/inet/tcp.t.payload.inet
+index 9c3fbbf..354d013 100644
+--- a/tests/py/inet/tcp.t.payload.inet
++++ b/tests/py/inet/tcp.t.payload.inet
+@@ -25,8 +25,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000006 ]
+   [ payload load 2b @ transport header + 2 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # tcp dport { 33, 55, 67, 88}
+ __set%d test-inet 3
+@@ -116,8 +115,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000006 ]
+   [ payload load 2b @ transport header + 0 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # tcp sport { 33, 55, 67, 88}
+ __set%d test-inet 3
+@@ -217,8 +215,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000006 ]
+   [ payload load 4b @ transport header + 4 => reg 1 ]
+-  [ cmp lt reg 1 0x21000000 ]
+-  [ cmp gt reg 1 0x2d000000 ]
++  [ range neq reg 1 0x21000000 0x2d000000 ]
+ 
+ # tcp sequence { 33, 55, 67, 88}
+ __set%d test-inet 3
+@@ -275,8 +272,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000006 ]
+   [ payload load 4b @ transport header + 8 => reg 1 ]
+-  [ cmp lt reg 1 0x21000000 ]
+-  [ cmp gt reg 1 0x2d000000 ]
++  [ range neq reg 1 0x21000000 0x2d000000 ]
+ 
+ # tcp ackseq { 33, 55, 67, 88}
+ __set%d test-inet 3
+@@ -358,8 +354,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000006 ]
+   [ payload load 2b @ transport header + 14 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # tcp window { 33, 55, 67, 88}
+ __set%d test-inet 3
+@@ -408,8 +403,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000006 ]
+   [ payload load 2b @ transport header + 16 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # tcp checksum { 33, 55, 67, 88}
+ __set%d test-inet 3
+@@ -466,8 +460,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000006 ]
+   [ payload load 2b @ transport header + 18 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # tcp urgptr { 33, 55, 67, 88}
+ __set%d test-inet 3
+diff --git a/tests/py/inet/tcp.t.payload.ip b/tests/py/inet/tcp.t.payload.ip
+index 75cbe70..d70a176 100644
+--- a/tests/py/inet/tcp.t.payload.ip
++++ b/tests/py/inet/tcp.t.payload.ip
+@@ -25,8 +25,7 @@ ip test-ip4 input
+   [ payload load 1b @ network header + 9 => reg 1 ]
+   [ cmp eq reg 1 0x00000006 ]
+   [ payload load 2b @ transport header + 2 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # tcp dport { 33, 55, 67, 88}
+ __set%d test-ip4 3
+@@ -116,8 +115,7 @@ ip test-ip4 input
+   [ payload load 1b @ network header + 9 => reg 1 ]
+   [ cmp eq reg 1 0x00000006 ]
+   [ payload load 2b @ transport header + 0 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # tcp sport { 33, 55, 67, 88}
+ __set%d test-ip4 3
+@@ -217,8 +215,7 @@ ip test-ip4 input
+   [ payload load 1b @ network header + 9 => reg 1 ]
+   [ cmp eq reg 1 0x00000006 ]
+   [ payload load 4b @ transport header + 4 => reg 1 ]
+-  [ cmp lt reg 1 0x21000000 ]
+-  [ cmp gt reg 1 0x2d000000 ]
++  [ range neq reg 1 0x21000000 0x2d000000 ]
+ 
+ # tcp sequence { 33, 55, 67, 88}
+ __set%d test-ip4 3
+@@ -275,8 +272,7 @@ ip test-ip4 input
+   [ payload load 1b @ network header + 9 => reg 1 ]
+   [ cmp eq reg 1 0x00000006 ]
+   [ payload load 4b @ transport header + 8 => reg 1 ]
+-  [ cmp lt reg 1 0x21000000 ]
+-  [ cmp gt reg 1 0x2d000000 ]
++  [ range neq reg 1 0x21000000 0x2d000000 ]
+ 
+ # tcp ackseq { 33, 55, 67, 88}
+ __set%d test-ip4 3
+@@ -358,8 +354,7 @@ ip test-ip4 input
+   [ payload load 1b @ network header + 9 => reg 1 ]
+   [ cmp eq reg 1 0x00000006 ]
+   [ payload load 2b @ transport header + 14 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # tcp window { 33, 55, 67, 88}
+ __set%d test-ip4 3
+@@ -408,8 +403,7 @@ ip test-ip4 input
+   [ payload load 1b @ network header + 9 => reg 1 ]
+   [ cmp eq reg 1 0x00000006 ]
+   [ payload load 2b @ transport header + 16 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # tcp checksum { 33, 55, 67, 88}
+ __set%d test-ip4 3
+@@ -466,8 +460,7 @@ ip test-ip4 input
+   [ payload load 1b @ network header + 9 => reg 1 ]
+   [ cmp eq reg 1 0x00000006 ]
+   [ payload load 2b @ transport header + 18 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # tcp urgptr { 33, 55, 67, 88}
+ __set%d test-ip4 3
+diff --git a/tests/py/inet/tcp.t.payload.ip6 b/tests/py/inet/tcp.t.payload.ip6
+index f65f9b8..4e9c413 100644
+--- a/tests/py/inet/tcp.t.payload.ip6
++++ b/tests/py/inet/tcp.t.payload.ip6
+@@ -25,8 +25,7 @@ ip6 test-ip6 input
+   [ payload load 1b @ network header + 6 => reg 1 ]
+   [ cmp eq reg 1 0x00000006 ]
+   [ payload load 2b @ transport header + 2 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # tcp dport { 33, 55, 67, 88}
+ __set%d test-ip6 3
+@@ -116,8 +115,7 @@ ip6 test-ip6 input
+   [ payload load 1b @ network header + 6 => reg 1 ]
+   [ cmp eq reg 1 0x00000006 ]
+   [ payload load 2b @ transport header + 0 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # tcp sport { 33, 55, 67, 88}
+ __set%d test-ip6 3
+@@ -217,8 +215,7 @@ ip6 test-ip6 input
+   [ payload load 1b @ network header + 6 => reg 1 ]
+   [ cmp eq reg 1 0x00000006 ]
+   [ payload load 4b @ transport header + 4 => reg 1 ]
+-  [ cmp lt reg 1 0x21000000 ]
+-  [ cmp gt reg 1 0x2d000000 ]
++  [ range neq reg 1 0x21000000 0x2d000000 ]
+ 
+ # tcp sequence { 33, 55, 67, 88}
+ __set%d test-ip6 3
+@@ -275,8 +272,7 @@ ip6 test-ip6 input
+   [ payload load 1b @ network header + 6 => reg 1 ]
+   [ cmp eq reg 1 0x00000006 ]
+   [ payload load 4b @ transport header + 8 => reg 1 ]
+-  [ cmp lt reg 1 0x21000000 ]
+-  [ cmp gt reg 1 0x2d000000 ]
++  [ range neq reg 1 0x21000000 0x2d000000 ]
+ 
+ # tcp ackseq { 33, 55, 67, 88}
+ __set%d test-ip6 3
+@@ -358,8 +354,7 @@ ip6 test-ip6 input
+   [ payload load 1b @ network header + 6 => reg 1 ]
+   [ cmp eq reg 1 0x00000006 ]
+   [ payload load 2b @ transport header + 14 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # tcp window { 33, 55, 67, 88}
+ __set%d test-ip6 3
+@@ -408,8 +403,7 @@ ip6 test-ip6 input
+   [ payload load 1b @ network header + 6 => reg 1 ]
+   [ cmp eq reg 1 0x00000006 ]
+   [ payload load 2b @ transport header + 16 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # tcp checksum { 33, 55, 67, 88}
+ __set%d test-ip6 3
+@@ -466,8 +460,7 @@ ip6 test-ip6 input
+   [ payload load 1b @ network header + 6 => reg 1 ]
+   [ cmp eq reg 1 0x00000006 ]
+   [ payload load 2b @ transport header + 18 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # tcp urgptr { 33, 55, 67, 88}
+ __set%d test-ip6 3
+diff --git a/tests/py/inet/tcp.t.payload.netdev b/tests/py/inet/tcp.t.payload.netdev
+index a554d07..854f4bb 100644
+--- a/tests/py/inet/tcp.t.payload.netdev
++++ b/tests/py/inet/tcp.t.payload.netdev
+@@ -25,8 +25,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000006 ]
+   [ payload load 2b @ transport header + 2 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # tcp dport { 33, 55, 67, 88}
+ __set%d test-inet 3
+@@ -116,8 +115,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000006 ]
+   [ payload load 2b @ transport header + 0 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # tcp sport { 33, 55, 67, 88}
+ __set%d test-inet 3
+@@ -217,8 +215,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000006 ]
+   [ payload load 4b @ transport header + 4 => reg 1 ]
+-  [ cmp lt reg 1 0x21000000 ]
+-  [ cmp gt reg 1 0x2d000000 ]
++  [ range neq reg 1 0x21000000 0x2d000000 ]
+ 
+ # tcp sequence { 33, 55, 67, 88}
+ __set%d test-inet 3
+@@ -275,8 +272,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000006 ]
+   [ payload load 4b @ transport header + 8 => reg 1 ]
+-  [ cmp lt reg 1 0x21000000 ]
+-  [ cmp gt reg 1 0x2d000000 ]
++  [ range neq reg 1 0x21000000 0x2d000000 ]
+ 
+ # tcp ackseq { 33, 55, 67, 88}
+ __set%d test-inet 3
+@@ -358,8 +354,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000006 ]
+   [ payload load 2b @ transport header + 14 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # tcp window { 33, 55, 67, 88}
+ __set%d test-inet 3
+@@ -416,8 +411,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000006 ]
+   [ payload load 2b @ transport header + 16 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # tcp checksum { 33, 55, 67, 88}
+ __set%d test-inet 3
+@@ -474,8 +468,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000006 ]
+   [ payload load 2b @ transport header + 18 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # tcp urgptr { 33, 55, 67, 88}
+ __set%d test-inet 3
+diff --git a/tests/py/inet/udp.t.payload.inet b/tests/py/inet/udp.t.payload.inet
+index 4ca9904..057b912 100644
+--- a/tests/py/inet/udp.t.payload.inet
++++ b/tests/py/inet/udp.t.payload.inet
+@@ -28,8 +28,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000011 ]
+   [ payload load 2b @ transport header + 0 => reg 1 ]
+-  [ cmp lt reg 1 0x00003200 ]
+-  [ cmp gt reg 1 0x00003c00 ]
++  [ range neq reg 1 0x00003200 0x00003c00 ]
+   [ immediate reg 0 accept ]
+ 
+ # udp sport { 49, 50} drop
+@@ -83,8 +82,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000011 ]
+   [ payload load 2b @ transport header + 2 => reg 1 ]
+-  [ cmp lt reg 1 0x00003200 ]
+-  [ cmp gt reg 1 0x00003c00 ]
++  [ range neq reg 1 0x00003200 0x00003c00 ]
+   [ immediate reg 0 accept ]
+ 
+ # udp dport { 49, 50} drop
+@@ -137,8 +135,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000011 ]
+   [ payload load 2b @ transport header + 4 => reg 1 ]
+-  [ cmp lt reg 1 0x00003200 ]
+-  [ cmp gt reg 1 0x00004100 ]
++  [ range neq reg 1 0x00003200 0x00004100 ]
+   [ immediate reg 0 accept ]
+ 
+ # udp length { 50, 65} accept
+@@ -197,8 +194,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000011 ]
+   [ payload load 2b @ transport header + 6 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # udp checksum { 33, 55, 67, 88}
+ __set%d test-inet 3
+diff --git a/tests/py/inet/udp.t.payload.ip b/tests/py/inet/udp.t.payload.ip
+index 56b6051..5fd279d 100644
+--- a/tests/py/inet/udp.t.payload.ip
++++ b/tests/py/inet/udp.t.payload.ip
+@@ -28,8 +28,7 @@ ip test-ip4 input
+   [ payload load 1b @ network header + 9 => reg 1 ]
+   [ cmp eq reg 1 0x00000011 ]
+   [ payload load 2b @ transport header + 0 => reg 1 ]
+-  [ cmp lt reg 1 0x00003200 ]
+-  [ cmp gt reg 1 0x00003c00 ]
++  [ range neq reg 1 0x00003200 0x00003c00 ]
+   [ immediate reg 0 accept ]
+ 
+ # udp sport { 49, 50} drop
+@@ -83,8 +82,7 @@ ip test-ip4 input
+   [ payload load 1b @ network header + 9 => reg 1 ]
+   [ cmp eq reg 1 0x00000011 ]
+   [ payload load 2b @ transport header + 2 => reg 1 ]
+-  [ cmp lt reg 1 0x00003200 ]
+-  [ cmp gt reg 1 0x00003c00 ]
++  [ range neq reg 1 0x00003200 0x00003c00 ]
+   [ immediate reg 0 accept ]
+ 
+ # udp dport { 49, 50} drop
+@@ -137,8 +135,7 @@ ip test-ip4 input
+   [ payload load 1b @ network header + 9 => reg 1 ]
+   [ cmp eq reg 1 0x00000011 ]
+   [ payload load 2b @ transport header + 4 => reg 1 ]
+-  [ cmp lt reg 1 0x00003200 ]
+-  [ cmp gt reg 1 0x00004100 ]
++  [ range neq reg 1 0x00003200 0x00004100 ]
+   [ immediate reg 0 accept ]
+ 
+ # udp length { 50, 65} accept
+@@ -197,8 +194,7 @@ ip test-ip4 input
+   [ payload load 1b @ network header + 9 => reg 1 ]
+   [ cmp eq reg 1 0x00000011 ]
+   [ payload load 2b @ transport header + 6 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # udp checksum { 33, 55, 67, 88}
+ __set%d test-ip4 3
+diff --git a/tests/py/inet/udp.t.payload.ip6 b/tests/py/inet/udp.t.payload.ip6
+index 1f1df66..a7d12c8 100644
+--- a/tests/py/inet/udp.t.payload.ip6
++++ b/tests/py/inet/udp.t.payload.ip6
+@@ -28,8 +28,7 @@ ip6 test-ip6 input
+   [ payload load 1b @ network header + 6 => reg 1 ]
+   [ cmp eq reg 1 0x00000011 ]
+   [ payload load 2b @ transport header + 0 => reg 1 ]
+-  [ cmp lt reg 1 0x00003200 ]
+-  [ cmp gt reg 1 0x00003c00 ]
++  [ range neq reg 1 0x00003200 0x00003c00 ]
+   [ immediate reg 0 accept ]
+ 
+ # udp sport { 49, 50} drop
+@@ -83,8 +82,7 @@ ip6 test-ip6 input
+   [ payload load 1b @ network header + 6 => reg 1 ]
+   [ cmp eq reg 1 0x00000011 ]
+   [ payload load 2b @ transport header + 2 => reg 1 ]
+-  [ cmp lt reg 1 0x00003200 ]
+-  [ cmp gt reg 1 0x00003c00 ]
++  [ range neq reg 1 0x00003200 0x00003c00 ]
+   [ immediate reg 0 accept ]
+ 
+ # udp dport { 49, 50} drop
+@@ -137,8 +135,7 @@ ip6 test-ip6 input
+   [ payload load 1b @ network header + 6 => reg 1 ]
+   [ cmp eq reg 1 0x00000011 ]
+   [ payload load 2b @ transport header + 4 => reg 1 ]
+-  [ cmp lt reg 1 0x00003200 ]
+-  [ cmp gt reg 1 0x00004100 ]
++  [ range neq reg 1 0x00003200 0x00004100 ]
+   [ immediate reg 0 accept ]
+ 
+ # udp length { 50, 65} accept
+@@ -197,8 +194,7 @@ ip6 test-ip6 input
+   [ payload load 1b @ network header + 6 => reg 1 ]
+   [ cmp eq reg 1 0x00000011 ]
+   [ payload load 2b @ transport header + 6 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # udp checksum { 33, 55, 67, 88}
+ __set%d test-ip6 3
+diff --git a/tests/py/inet/udp.t.payload.netdev b/tests/py/inet/udp.t.payload.netdev
+index 4ca9904..057b912 100644
+--- a/tests/py/inet/udp.t.payload.netdev
++++ b/tests/py/inet/udp.t.payload.netdev
+@@ -28,8 +28,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000011 ]
+   [ payload load 2b @ transport header + 0 => reg 1 ]
+-  [ cmp lt reg 1 0x00003200 ]
+-  [ cmp gt reg 1 0x00003c00 ]
++  [ range neq reg 1 0x00003200 0x00003c00 ]
+   [ immediate reg 0 accept ]
+ 
+ # udp sport { 49, 50} drop
+@@ -83,8 +82,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000011 ]
+   [ payload load 2b @ transport header + 2 => reg 1 ]
+-  [ cmp lt reg 1 0x00003200 ]
+-  [ cmp gt reg 1 0x00003c00 ]
++  [ range neq reg 1 0x00003200 0x00003c00 ]
+   [ immediate reg 0 accept ]
+ 
+ # udp dport { 49, 50} drop
+@@ -137,8 +135,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000011 ]
+   [ payload load 2b @ transport header + 4 => reg 1 ]
+-  [ cmp lt reg 1 0x00003200 ]
+-  [ cmp gt reg 1 0x00004100 ]
++  [ range neq reg 1 0x00003200 0x00004100 ]
+   [ immediate reg 0 accept ]
+ 
+ # udp length { 50, 65} accept
+@@ -197,8 +194,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000011 ]
+   [ payload load 2b @ transport header + 6 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # udp checksum { 33, 55, 67, 88}
+ __set%d test-inet 3
+diff --git a/tests/py/inet/udplite.t.payload.inet b/tests/py/inet/udplite.t.payload.inet
+index 034c62d..ad2c970 100644
+--- a/tests/py/inet/udplite.t.payload.inet
++++ b/tests/py/inet/udplite.t.payload.inet
+@@ -28,8 +28,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000088 ]
+   [ payload load 2b @ transport header + 0 => reg 1 ]
+-  [ cmp lt reg 1 0x00003200 ]
+-  [ cmp gt reg 1 0x00003c00 ]
++  [ range neq reg 1 0x00003200 0x00003c00 ]
+   [ immediate reg 0 accept ]
+ 
+ # udplite sport { 49, 50} drop
+@@ -83,8 +82,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000088 ]
+   [ payload load 2b @ transport header + 2 => reg 1 ]
+-  [ cmp lt reg 1 0x00003200 ]
+-  [ cmp gt reg 1 0x00003c00 ]
++  [ range neq reg 1 0x00003200 0x00003c00 ]
+   [ immediate reg 0 accept ]
+ 
+ # udplite dport { 49, 50} drop
+@@ -144,8 +142,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000088 ]
+   [ payload load 2b @ transport header + 6 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # udplite checksum { 33, 55, 67, 88}
+ __set%d test-ip4 3
+diff --git a/tests/py/inet/udplite.t.payload.ip b/tests/py/inet/udplite.t.payload.ip
+index 3da9e53..8321c23 100644
+--- a/tests/py/inet/udplite.t.payload.ip
++++ b/tests/py/inet/udplite.t.payload.ip
+@@ -28,8 +28,7 @@ ip test-ip4 input
+   [ payload load 1b @ network header + 9 => reg 1 ]
+   [ cmp eq reg 1 0x00000088 ]
+   [ payload load 2b @ transport header + 0 => reg 1 ]
+-  [ cmp lt reg 1 0x00003200 ]
+-  [ cmp gt reg 1 0x00003c00 ]
++  [ range neq reg 1 0x00003200 0x00003c00 ]
+   [ immediate reg 0 accept ]
+ 
+ # udplite sport { 49, 50} drop
+@@ -83,8 +82,7 @@ ip test-ip4 input
+   [ payload load 1b @ network header + 9 => reg 1 ]
+   [ cmp eq reg 1 0x00000088 ]
+   [ payload load 2b @ transport header + 2 => reg 1 ]
+-  [ cmp lt reg 1 0x00003200 ]
+-  [ cmp gt reg 1 0x00003c00 ]
++  [ range neq reg 1 0x00003200 0x00003c00 ]
+   [ immediate reg 0 accept ]
+ 
+ # udplite dport { 49, 50} drop
+@@ -144,8 +142,7 @@ ip test-ip4 input
+   [ payload load 1b @ network header + 9 => reg 1 ]
+   [ cmp eq reg 1 0x00000088 ]
+   [ payload load 2b @ transport header + 6 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # udplite checksum { 33, 55, 67, 88}
+ __set%d test-ip4 3
+diff --git a/tests/py/inet/udplite.t.payload.ip6 b/tests/py/inet/udplite.t.payload.ip6
+index 205ea21..dce215d 100644
+--- a/tests/py/inet/udplite.t.payload.ip6
++++ b/tests/py/inet/udplite.t.payload.ip6
+@@ -28,8 +28,7 @@ ip6 test-ip6 input
+   [ payload load 1b @ network header + 6 => reg 1 ]
+   [ cmp eq reg 1 0x00000088 ]
+   [ payload load 2b @ transport header + 0 => reg 1 ]
+-  [ cmp lt reg 1 0x00003200 ]
+-  [ cmp gt reg 1 0x00003c00 ]
++  [ range neq reg 1 0x00003200 0x00003c00 ]
+   [ immediate reg 0 accept ]
+ 
+ # udplite sport { 49, 50} drop
+@@ -83,8 +82,7 @@ ip6 test-ip6 input
+   [ payload load 1b @ network header + 6 => reg 1 ]
+   [ cmp eq reg 1 0x00000088 ]
+   [ payload load 2b @ transport header + 2 => reg 1 ]
+-  [ cmp lt reg 1 0x00003200 ]
+-  [ cmp gt reg 1 0x00003c00 ]
++  [ range neq reg 1 0x00003200 0x00003c00 ]
+   [ immediate reg 0 accept ]
+ 
+ # udplite dport { 49, 50} drop
+@@ -144,8 +142,7 @@ ip6 test-ip6 input
+   [ payload load 1b @ network header + 6 => reg 1 ]
+   [ cmp eq reg 1 0x00000088 ]
+   [ payload load 2b @ transport header + 6 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # udplite checksum { 33, 55, 67, 88}
+ __set%d test-ip4 3
+diff --git a/tests/py/inet/udplite.t.payload.netdev b/tests/py/inet/udplite.t.payload.netdev
+index 034c62d..ad2c970 100644
+--- a/tests/py/inet/udplite.t.payload.netdev
++++ b/tests/py/inet/udplite.t.payload.netdev
+@@ -28,8 +28,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000088 ]
+   [ payload load 2b @ transport header + 0 => reg 1 ]
+-  [ cmp lt reg 1 0x00003200 ]
+-  [ cmp gt reg 1 0x00003c00 ]
++  [ range neq reg 1 0x00003200 0x00003c00 ]
+   [ immediate reg 0 accept ]
+ 
+ # udplite sport { 49, 50} drop
+@@ -83,8 +82,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000088 ]
+   [ payload load 2b @ transport header + 2 => reg 1 ]
+-  [ cmp lt reg 1 0x00003200 ]
+-  [ cmp gt reg 1 0x00003c00 ]
++  [ range neq reg 1 0x00003200 0x00003c00 ]
+   [ immediate reg 0 accept ]
+ 
+ # udplite dport { 49, 50} drop
+@@ -144,8 +142,7 @@ inet test-inet input
+   [ meta load l4proto => reg 1 ]
+   [ cmp eq reg 1 0x00000088 ]
+   [ payload load 2b @ transport header + 6 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # udplite checksum { 33, 55, 67, 88}
+ __set%d test-ip4 3
+diff --git a/tests/py/ip/dnat.t.payload.ip b/tests/py/ip/dnat.t.payload.ip
+index bf972c6..c951f7c 100644
+--- a/tests/py/ip/dnat.t.payload.ip
++++ b/tests/py/ip/dnat.t.payload.ip
+@@ -17,8 +17,7 @@ ip test-ip4 prerouting
+   [ payload load 1b @ network header + 9 => reg 1 ]
+   [ cmp eq reg 1 0x00000006 ]
+   [ payload load 2b @ transport header + 2 => reg 1 ]
+-  [ cmp lt reg 1 0x00005000 ]
+-  [ cmp gt reg 1 0x00005a00 ]
++  [ range neq reg 1 0x00005000 0x00005a00 ]
+   [ immediate reg 1 0x0203a8c0 ]
+   [ nat dnat ip addr_min reg 1 addr_max reg 0 ]
+ 
+@@ -43,8 +42,7 @@ ip test-ip4 prerouting
+   [ payload load 1b @ network header + 9 => reg 1 ]
+   [ cmp eq reg 1 0x00000006 ]
+   [ payload load 2b @ transport header + 2 => reg 1 ]
+-  [ cmp lt reg 1 0x00001700 ]
+-  [ cmp gt reg 1 0x00002200 ]
++  [ range neq reg 1 0x00001700 0x00002200 ]
+   [ immediate reg 1 0x0203a8c0 ]
+   [ nat dnat ip addr_min reg 1 addr_max reg 0 ]
+ 
+diff --git a/tests/py/ip/icmp.t.payload.ip b/tests/py/ip/icmp.t.payload.ip
+index 32f2685..c7df75d 100644
+--- a/tests/py/ip/icmp.t.payload.ip
++++ b/tests/py/ip/icmp.t.payload.ip
+@@ -142,8 +142,7 @@ ip test-ip4 input
+   [ payload load 1b @ network header + 9 => reg 1 ]
+   [ cmp eq reg 1 0x00000001 ]
+   [ payload load 1b @ transport header + 1 => reg 1 ]
+-  [ cmp lt reg 1 0x00000021 ]
+-  [ cmp gt reg 1 0x00000037 ]
++  [ range neq reg 1 0x00000021 0x00000037 ]
+ 
+ # icmp code { 33-55}
+ __set%d test-ip4 7
+@@ -195,8 +194,7 @@ ip test-ip4 input
+   [ payload load 1b @ network header + 9 => reg 1 ]
+   [ cmp eq reg 1 0x00000001 ]
+   [ payload load 2b @ transport header + 2 => reg 1 ]
+-  [ cmp lt reg 1 0x00000b00 ]
+-  [ cmp gt reg 1 0x00005701 ]
++  [ range neq reg 1 0x00000b00 0x00005701 ]
+   [ immediate reg 0 accept ]
+ 
+ # icmp checksum { 11-343} accept
+@@ -256,8 +254,7 @@ ip test-ip4 input
+   [ payload load 1b @ network header + 9 => reg 1 ]
+   [ cmp eq reg 1 0x00000001 ]
+   [ payload load 2b @ transport header + 4 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # icmp id { 33-55}
+ __set%d test-ip4 7
+@@ -306,8 +303,7 @@ ip test-ip4 input
+   [ payload load 1b @ network header + 9 => reg 1 ]
+   [ cmp eq reg 1 0x00000001 ]
+   [ payload load 2b @ transport header + 6 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # icmp sequence { 33, 55, 67, 88}
+ __set%d test-ip4 3
+@@ -381,8 +377,7 @@ ip test-ip4 input
+   [ payload load 1b @ network header + 9 => reg 1 ]
+   [ cmp eq reg 1 0x00000001 ]
+   [ payload load 2b @ transport header + 6 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # icmp mtu { 33, 55, 67, 88}
+ __set%d test-ip4 3
+@@ -431,8 +426,7 @@ ip test-ip4 input
+   [ payload load 1b @ network header + 9 => reg 1 ]
+   [ cmp eq reg 1 0x00000001 ]
+   [ payload load 4b @ transport header + 4 => reg 1 ]
+-  [ cmp lt reg 1 0x21000000 ]
+-  [ cmp gt reg 1 0x2d000000 ]
++  [ range neq reg 1 0x21000000 0x2d000000 ]
+ 
+ # icmp gateway { 33, 55, 67, 88}
+ __set%d test-ip4 3
+diff --git a/tests/py/ip/ip.t.payload b/tests/py/ip/ip.t.payload
+index 3bd3358..9ce5527 100644
+--- a/tests/py/ip/ip.t.payload
++++ b/tests/py/ip/ip.t.payload
+@@ -50,8 +50,7 @@ ip test-ip4 input
+ # ip length != 333-453
+ ip test-ip4 input
+   [ payload load 2b @ network header + 2 => reg 1 ]
+-  [ cmp lt reg 1 0x00004d01 ]
+-  [ cmp gt reg 1 0x0000c501 ]
++  [ range neq reg 1 0x00004d01 0x0000c501 ]
+ 
+ # ip length { 333, 553, 673, 838}
+ __set%d test-ip4 3
+@@ -88,8 +87,7 @@ ip test-ip4 input
+ # ip id != 33-45
+ ip test-ip4 input
+   [ payload load 2b @ network header + 4 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # ip id { 33, 55, 67, 88}
+ __set%d test-ip4 3
+@@ -127,8 +125,7 @@ ip test-ip4 input
+ # ip frag-off != 33-45
+ ip test-ip4 input
+   [ payload load 2b @ network header + 6 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # ip frag-off { 33, 55, 67, 88}
+ __set%d test-ip4 3
+@@ -166,8 +163,7 @@ ip test-ip4 input
+ # ip ttl != 45-50
+ ip test-ip4 input
+   [ payload load 1b @ network header + 8 => reg 1 ]
+-  [ cmp lt reg 1 0x0000002d ]
+-  [ cmp gt reg 1 0x00000032 ]
++  [ range neq reg 1 0x0000002d 0x00000032 ]
+ 
+ # ip ttl {43, 53, 45 }
+ __set%d test-ip4 3
+@@ -229,8 +225,7 @@ ip test-ip4 input
+ # ip checksum != 33-45
+ ip test-ip4 input
+   [ payload load 2b @ network header + 10 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # ip checksum { 33, 55, 67, 88}
+ __set%d test-ip4 3
+@@ -302,8 +297,7 @@ ip test-ip4 input
+ # ip daddr != 192.168.0.1-192.168.0.250
+ ip test-ip4 input
+   [ payload load 4b @ network header + 16 => reg 1 ]
+-  [ cmp lt reg 1 0x0100a8c0 ]
+-  [ cmp gt reg 1 0xfa00a8c0 ]
++  [ range neq reg 1 0x0100a8c0 0xfa00a8c0 ]
+ 
+ # ip daddr { 192.168.0.1-192.168.0.250}
+ __set%d test-ip4 7
+@@ -331,8 +325,7 @@ ip test-ip4 input
+ # ip daddr != 192.168.1.2-192.168.1.55
+ ip test-ip4 input
+   [ payload load 4b @ network header + 16 => reg 1 ]
+-  [ cmp lt reg 1 0x0201a8c0 ]
+-  [ cmp gt reg 1 0x3701a8c0 ]
++  [ range neq reg 1 0x0201a8c0 0x3701a8c0 ]
+ 
+ # ip saddr 192.168.1.3-192.168.33.55
+ ip test-ip4 input
+@@ -343,8 +336,7 @@ ip test-ip4 input
+ # ip saddr != 192.168.1.3-192.168.33.55
+ ip test-ip4 input
+   [ payload load 4b @ network header + 12 => reg 1 ]
+-  [ cmp lt reg 1 0x0301a8c0 ]
+-  [ cmp gt reg 1 0x3721a8c0 ]
++  [ range neq reg 1 0x0301a8c0 0x3721a8c0 ]
+ 
+ # ip daddr 192.168.0.1
+ ip test-ip4 input
+diff --git a/tests/py/ip/ip.t.payload.inet b/tests/py/ip/ip.t.payload.inet
+index ef4692e..cf41eb2 100644
+--- a/tests/py/ip/ip.t.payload.inet
++++ b/tests/py/ip/ip.t.payload.inet
+@@ -68,8 +68,7 @@ inet test-inet input
+   [ meta load nfproto => reg 1 ]
+   [ cmp eq reg 1 0x00000002 ]
+   [ payload load 2b @ network header + 2 => reg 1 ]
+-  [ cmp lt reg 1 0x00004d01 ]
+-  [ cmp gt reg 1 0x0000c501 ]
++  [ range neq reg 1 0x00004d01 0x0000c501 ]
+ 
+ # ip length { 333, 553, 673, 838}
+ __set%d test-inet 3
+@@ -118,8 +117,7 @@ inet test-inet input
+   [ meta load nfproto => reg 1 ]
+   [ cmp eq reg 1 0x00000002 ]
+   [ payload load 2b @ network header + 4 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # ip id { 33, 55, 67, 88}
+ __set%d test-inet 3
+@@ -169,8 +167,7 @@ inet test-inet input
+   [ meta load nfproto => reg 1 ]
+   [ cmp eq reg 1 0x00000002 ]
+   [ payload load 2b @ network header + 6 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # ip frag-off { 33, 55, 67, 88}
+ __set%d test-inet 3
+@@ -220,8 +217,7 @@ inet test-inet input
+   [ meta load nfproto => reg 1 ]
+   [ cmp eq reg 1 0x00000002 ]
+   [ payload load 1b @ network header + 8 => reg 1 ]
+-  [ cmp lt reg 1 0x0000002d ]
+-  [ cmp gt reg 1 0x00000032 ]
++  [ range neq reg 1 0x0000002d 0x00000032 ]
+ 
+ # ip ttl {43, 53, 45 }
+ __set%d test-inet 3
+@@ -303,8 +299,7 @@ inet test-inet input
+   [ meta load nfproto => reg 1 ]
+   [ cmp eq reg 1 0x00000002 ]
+   [ payload load 2b @ network header + 10 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # ip checksum { 33, 55, 67, 88}
+ __set%d test-inet 3
+@@ -400,8 +395,7 @@ inet test-inet input
+   [ meta load nfproto => reg 1 ]
+   [ cmp eq reg 1 0x00000002 ]
+   [ payload load 4b @ network header + 16 => reg 1 ]
+-  [ cmp lt reg 1 0x0100a8c0 ]
+-  [ cmp gt reg 1 0xfa00a8c0 ]
++  [ range neq reg 1 0x0100a8c0 0xfa00a8c0 ]
+ 
+ # ip daddr { 192.168.0.1-192.168.0.250}
+ __set%d test-inet 7
+@@ -437,8 +431,7 @@ inet test-inet input
+   [ meta load nfproto => reg 1 ]
+   [ cmp eq reg 1 0x00000002 ]
+   [ payload load 4b @ network header + 16 => reg 1 ]
+-  [ cmp lt reg 1 0x0201a8c0 ]
+-  [ cmp gt reg 1 0x3701a8c0 ]
++  [ range neq reg 1 0x0201a8c0 0x3701a8c0 ]
+ 
+ # ip saddr 192.168.1.3-192.168.33.55
+ inet test-inet input
+@@ -453,8 +446,7 @@ inet test-inet input
+   [ meta load nfproto => reg 1 ]
+   [ cmp eq reg 1 0x00000002 ]
+   [ payload load 4b @ network header + 12 => reg 1 ]
+-  [ cmp lt reg 1 0x0301a8c0 ]
+-  [ cmp gt reg 1 0x3721a8c0 ]
++  [ range neq reg 1 0x0301a8c0 0x3721a8c0 ]
+ 
+ # ip daddr 192.168.0.1
+ inet test-inet input
+diff --git a/tests/py/ip/ip.t.payload.netdev b/tests/py/ip/ip.t.payload.netdev
+index 4feaa27..ae2a74b 100644
+--- a/tests/py/ip/ip.t.payload.netdev
++++ b/tests/py/ip/ip.t.payload.netdev
+@@ -25,8 +25,7 @@ netdev test-netdev ingress
+   [ meta load protocol => reg 1 ]
+   [ cmp eq reg 1 0x00000008 ]
+   [ payload load 2b @ network header + 2 => reg 1 ]
+-  [ cmp lt reg 1 0x00004d01 ]
+-  [ cmp gt reg 1 0x0000c501 ]
++  [ range neq reg 1 0x00004d01 0x0000c501 ]
+ 
+ # ip length { 333, 553, 673, 838}
+ __set%d test-netdev 3
+@@ -75,8 +74,7 @@ netdev test-netdev ingress
+   [ meta load protocol => reg 1 ]
+   [ cmp eq reg 1 0x00000008 ]
+   [ payload load 2b @ network header + 4 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # ip id { 33, 55, 67, 88}
+ __set%d test-netdev 3
+@@ -126,8 +124,7 @@ netdev test-netdev ingress
+   [ meta load protocol => reg 1 ]
+   [ cmp eq reg 1 0x00000008 ]
+   [ payload load 2b @ network header + 6 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # ip frag-off { 33, 55, 67, 88}
+ __set%d test-netdev 3
+@@ -170,8 +167,7 @@ netdev test-netdev ingress
+   [ meta load protocol => reg 1 ]
+   [ cmp eq reg 1 0x00000008 ]
+   [ payload load 1b @ network header + 8 => reg 1 ]
+-  [ cmp lt reg 1 0x0000002d ]
+-  [ cmp gt reg 1 0x00000032 ]
++  [ range neq reg 1 0x0000002d 0x00000032 ]
+ 
+ # ip ttl {43, 53, 45 }
+ __set%d test-netdev 3
+@@ -239,8 +235,7 @@ netdev test-netdev ingress
+   [ meta load protocol => reg 1 ]
+   [ cmp eq reg 1 0x00000008 ]
+   [ payload load 2b @ network header + 10 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # ip checksum { 33, 55, 67, 88}
+ __set%d test-netdev 3
+@@ -329,8 +324,7 @@ netdev test-netdev ingress
+   [ meta load protocol => reg 1 ]
+   [ cmp eq reg 1 0x00000008 ]
+   [ payload load 4b @ network header + 16 => reg 1 ]
+-  [ cmp lt reg 1 0x0100a8c0 ]
+-  [ cmp gt reg 1 0xfa00a8c0 ]
++  [ range neq reg 1 0x0100a8c0 0xfa00a8c0 ]
+ 
+ # ip daddr { 192.168.0.1-192.168.0.250}
+ __set%d test-netdev 7
+@@ -366,8 +360,7 @@ netdev test-netdev ingress
+   [ meta load protocol => reg 1 ]
+   [ cmp eq reg 1 0x00000008 ]
+   [ payload load 4b @ network header + 16 => reg 1 ]
+-  [ cmp lt reg 1 0x0201a8c0 ]
+-  [ cmp gt reg 1 0x3701a8c0 ]
++  [ range neq reg 1 0x0201a8c0 0x3701a8c0 ]
+ 
+ # ip saddr 192.168.1.3-192.168.33.55
+ netdev test-netdev ingress 
+@@ -382,8 +375,7 @@ netdev test-netdev ingress
+   [ meta load protocol => reg 1 ]
+   [ cmp eq reg 1 0x00000008 ]
+   [ payload load 4b @ network header + 12 => reg 1 ]
+-  [ cmp lt reg 1 0x0301a8c0 ]
+-  [ cmp gt reg 1 0x3721a8c0 ]
++  [ range neq reg 1 0x0301a8c0 0x3721a8c0 ]
+ 
+ # ip daddr 192.168.0.1
+ netdev test-netdev ingress 
+diff --git a/tests/py/ip/snat.t.payload b/tests/py/ip/snat.t.payload
+index cbea641..40a2f4c 100644
+--- a/tests/py/ip/snat.t.payload
++++ b/tests/py/ip/snat.t.payload
+@@ -17,8 +17,7 @@ ip test-ip4 postrouting
+   [ payload load 1b @ network header + 9 => reg 1 ]
+   [ cmp eq reg 1 0x00000006 ]
+   [ payload load 2b @ transport header + 2 => reg 1 ]
+-  [ cmp lt reg 1 0x00005000 ]
+-  [ cmp gt reg 1 0x00005a00 ]
++  [ range neq reg 1 0x00005000 0x00005a00 ]
+   [ immediate reg 1 0x0203a8c0 ]
+   [ nat snat ip addr_min reg 1 addr_max reg 0 ]
+ 
+@@ -43,8 +42,7 @@ ip test-ip4 postrouting
+   [ payload load 1b @ network header + 9 => reg 1 ]
+   [ cmp eq reg 1 0x00000006 ]
+   [ payload load 2b @ transport header + 2 => reg 1 ]
+-  [ cmp lt reg 1 0x00001700 ]
+-  [ cmp gt reg 1 0x00002200 ]
++  [ range neq reg 1 0x00001700 0x00002200 ]
+   [ immediate reg 1 0x0203a8c0 ]
+   [ nat snat ip addr_min reg 1 addr_max reg 0 ]
+ 
+diff --git a/tests/py/ip6/dst.t.payload.inet b/tests/py/ip6/dst.t.payload.inet
+index 15914d9..62d1c5a 100644
+--- a/tests/py/ip6/dst.t.payload.inet
++++ b/tests/py/ip6/dst.t.payload.inet
+@@ -25,8 +25,7 @@ inet test-inet input
+   [ meta load nfproto => reg 1 ]
+   [ cmp eq reg 1 0x0000000a ]
+   [ exthdr load 1b @ 60 + 0 => reg 1 ]
+-  [ cmp lt reg 1 0x00000021 ]
+-  [ cmp gt reg 1 0x0000002d ]
++  [ range neq reg 1 0x00000021 0x0000002d ]
+ 
+ # dst nexthdr { 33, 55, 67, 88}
+ __set%d test-inet 3
+@@ -99,8 +98,7 @@ ip6 test-ip6 input
+   [ meta load nfproto => reg 1 ]
+   [ cmp eq reg 1 0x0000000a ]
+   [ exthdr load 1b @ 60 + 1 => reg 1 ]
+-  [ cmp lt reg 1 0x00000021 ]
+-  [ cmp gt reg 1 0x0000002d ]
++  [ range neq reg 1 0x00000021 0x0000002d ]
+ 
+ # dst hdrlength { 33, 55, 67, 88}
+ __set%d test-ip6 3
+diff --git a/tests/py/ip6/dst.t.payload.ip6 b/tests/py/ip6/dst.t.payload.ip6
+index 3f6c8e1..c022c7f 100644
+--- a/tests/py/ip6/dst.t.payload.ip6
++++ b/tests/py/ip6/dst.t.payload.ip6
+@@ -17,8 +17,7 @@ ip6 test-ip6 input
+ # dst nexthdr != 33-45
+ ip6 test-ip6 input
+   [ exthdr load 1b @ 60 + 0 => reg 1 ]
+-  [ cmp lt reg 1 0x00000021 ]
+-  [ cmp gt reg 1 0x0000002d ]
++  [ range neq reg 1 0x00000021 0x0000002d ]
+ 
+ # dst nexthdr { 33, 55, 67, 88}
+ __set%d test-ip6 3
+@@ -73,8 +72,7 @@ ip6 test-ip6 input
+ # dst hdrlength != 33-45
+ ip6 test-ip6 input
+   [ exthdr load 1b @ 60 + 1 => reg 1 ]
+-  [ cmp lt reg 1 0x00000021 ]
+-  [ cmp gt reg 1 0x0000002d ]
++  [ range neq reg 1 0x00000021 0x0000002d ]
+ 
+ # dst hdrlength { 33, 55, 67, 88}
+ __set%d test-ip6 3
+diff --git a/tests/py/ip6/frag.t.payload.inet b/tests/py/ip6/frag.t.payload.inet
+index 387dbd6..bf57eca 100644
+--- a/tests/py/ip6/frag.t.payload.inet
++++ b/tests/py/ip6/frag.t.payload.inet
+@@ -63,8 +63,7 @@ inet test-inet output
+   [ meta load nfproto => reg 1 ]
+   [ cmp eq reg 1 0x0000000a ]
+   [ exthdr load 1b @ 44 + 1 => reg 1 ]
+-  [ cmp lt reg 1 0x00000021 ]
+-  [ cmp gt reg 1 0x0000002d ]
++  [ range neq reg 1 0x00000021 0x0000002d ]
+ 
+ # frag reserved { 33, 55, 67, 88}
+ __set%d test-inet 3
+@@ -117,8 +116,7 @@ inet test-inet output
+   [ cmp eq reg 1 0x0000000a ]
+   [ exthdr load 2b @ 44 + 2 => reg 1 ]
+   [ bitwise reg 1 = (reg=1 & 0x0000f8ff ) ^ 0x00000000 ]
+-  [ cmp lt reg 1 0x00000801 ]
+-  [ cmp gt reg 1 0x00006801 ]
++  [ range neq reg 1 0x00000801 0x00006801 ]
+ 
+ # frag frag-off { 33, 55, 67, 88}
+ __set%d test-inet 3
+@@ -184,8 +182,7 @@ inet test-inet output
+   [ meta load nfproto => reg 1 ]
+   [ cmp eq reg 1 0x0000000a ]
+   [ exthdr load 4b @ 44 + 4 => reg 1 ]
+-  [ cmp lt reg 1 0x21000000 ]
+-  [ cmp gt reg 1 0x2d000000 ]
++  [ range neq reg 1 0x21000000 0x2d000000 ]
+ 
+ # frag id { 33, 55, 67, 88}
+ __set%d test-inet 3
+diff --git a/tests/py/ip6/frag.t.payload.ip6 b/tests/py/ip6/frag.t.payload.ip6
+index 1f27975..aa27005 100644
+--- a/tests/py/ip6/frag.t.payload.ip6
++++ b/tests/py/ip6/frag.t.payload.ip6
+@@ -45,8 +45,7 @@ ip6 test-ip6 output
+ # frag reserved != 33-45
+ ip6 test-ip6 output
+   [ exthdr load 1b @ 44 + 1 => reg 1 ]
+-  [ cmp lt reg 1 0x00000021 ]
+-  [ cmp gt reg 1 0x0000002d ]
++  [ range neq reg 1 0x00000021 0x0000002d ]
+ 
+ # frag reserved { 33, 55, 67, 88}
+ __set%d test-ip6 3
+@@ -87,8 +86,7 @@ ip6 test-ip6 output
+ ip6 test-ip6 output
+   [ exthdr load 2b @ 44 + 2 => reg 1 ]
+   [ bitwise reg 1 = (reg=1 & 0x0000f8ff ) ^ 0x00000000 ]
+-  [ cmp lt reg 1 0x00000801 ]
+-  [ cmp gt reg 1 0x00006801 ]
++  [ range neq reg 1 0x00000801 0x00006801 ]
+ 
+ # frag frag-off { 33, 55, 67, 88}
+ __set%d test-ip6 3
+@@ -138,8 +136,7 @@ ip6 test-ip6 output
+ # frag id != 33-45
+ ip6 test-ip6 output
+   [ exthdr load 4b @ 44 + 4 => reg 1 ]
+-  [ cmp lt reg 1 0x21000000 ]
+-  [ cmp gt reg 1 0x2d000000 ]
++  [ range neq reg 1 0x21000000 0x2d000000 ]
+ 
+ # frag id { 33, 55, 67, 88}
+ __set%d test-ip6 3
+diff --git a/tests/py/ip6/hbh.t.payload.inet b/tests/py/ip6/hbh.t.payload.inet
+index 5fcd2fd..7e0d079 100644
+--- a/tests/py/ip6/hbh.t.payload.inet
++++ b/tests/py/ip6/hbh.t.payload.inet
+@@ -25,8 +25,7 @@ inet test-inet filter-input
+   [ meta load nfproto => reg 1 ]
+   [ cmp eq reg 1 0x0000000a ]
+   [ exthdr load 1b @ 0 + 1 => reg 1 ]
+-  [ cmp lt reg 1 0x00000021 ]
+-  [ cmp gt reg 1 0x0000002d ]
++  [ range neq reg 1 0x00000021 0x0000002d ]
+ 
+ # hbh hdrlength {33, 55, 67, 88}
+ __set%d test-inet 3
+@@ -85,8 +84,7 @@ inet test-inet filter-input
+   [ meta load nfproto => reg 1 ]
+   [ cmp eq reg 1 0x0000000a ]
+   [ exthdr load 1b @ 0 + 0 => reg 1 ]
+-  [ cmp lt reg 1 0x00000021 ]
+-  [ cmp gt reg 1 0x0000002d ]
++  [ range neq reg 1 0x00000021 0x0000002d ]
+ 
+ # hbh nexthdr {33, 55, 67, 88}
+ __set%d test-inet 3
+diff --git a/tests/py/ip6/hbh.t.payload.ip6 b/tests/py/ip6/hbh.t.payload.ip6
+index a2b4633..783fc6a 100644
+--- a/tests/py/ip6/hbh.t.payload.ip6
++++ b/tests/py/ip6/hbh.t.payload.ip6
+@@ -17,8 +17,7 @@ ip6 test-ip6 filter-input
+ # hbh hdrlength != 33-45
+ ip6 test-ip6 filter-input
+   [ exthdr load 1b @ 0 + 1 => reg 1 ]
+-  [ cmp lt reg 1 0x00000021 ]
+-  [ cmp gt reg 1 0x0000002d ]
++  [ range neq reg 1 0x00000021 0x0000002d ]
+ 
+ # hbh hdrlength {33, 55, 67, 88}
+ __set%d test-ip6 3
+@@ -63,8 +62,7 @@ ip6 test-ip6 filter-input
+ # hbh nexthdr != 33-45
+ ip6 test-ip6 filter-input
+   [ exthdr load 1b @ 0 + 0 => reg 1 ]
+-  [ cmp lt reg 1 0x00000021 ]
+-  [ cmp gt reg 1 0x0000002d ]
++  [ range neq reg 1 0x00000021 0x0000002d ]
+ 
+ # hbh nexthdr {33, 55, 67, 88}
+ __set%d test-ip6 3
+diff --git a/tests/py/ip6/icmpv6.t.payload.ip6 b/tests/py/ip6/icmpv6.t.payload.ip6
+index 4b6f541..822db2d 100644
+--- a/tests/py/ip6/icmpv6.t.payload.ip6
++++ b/tests/py/ip6/icmpv6.t.payload.ip6
+@@ -266,8 +266,7 @@ ip6 test-ip6 input
+   [ payload load 1b @ network header + 6 => reg 1 ]
+   [ cmp eq reg 1 0x0000003a ]
+   [ payload load 4b @ transport header + 4 => reg 1 ]
+-  [ cmp lt reg 1 0x21000000 ]
+-  [ cmp gt reg 1 0x2d000000 ]
++  [ range neq reg 1 0x21000000 0x2d000000 ]
+ 
+ # icmpv6 mtu {33, 55, 67, 88}
+ __set%d test-ip6 3
+@@ -302,8 +301,7 @@ ip6 test-ip6 input
+   [ payload load 1b @ network header + 6 => reg 1 ]
+   [ cmp eq reg 1 0x0000003a ]
+   [ payload load 2b @ transport header + 4 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # icmpv6 id {33, 55, 67, 88}
+ __set%d test-ip6 3
+@@ -366,8 +364,7 @@ ip6 test-ip6 input
+   [ payload load 1b @ network header + 6 => reg 1 ]
+   [ cmp eq reg 1 0x0000003a ]
+   [ payload load 2b @ transport header + 6 => reg 1 ]
+-  [ cmp lt reg 1 0x00000200 ]
+-  [ cmp gt reg 1 0x00000400 ]
++  [ range neq reg 1 0x00000200 0x00000400 ]
+ 
+ # icmpv6 sequence { 2-4}
+ __set%d test-ip6 7
+diff --git a/tests/py/ip6/ip6.t.payload.inet b/tests/py/ip6/ip6.t.payload.inet
+index c29c5a3..f52376c 100644
+--- a/tests/py/ip6/ip6.t.payload.inet
++++ b/tests/py/ip6/ip6.t.payload.inet
+@@ -106,8 +106,7 @@ inet test-inet input
+   [ meta load nfproto => reg 1 ]
+   [ cmp eq reg 1 0x0000000a ]
+   [ payload load 2b @ network header + 4 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # ip6 length { 33-55}
+ __set%d test-inet 7
+@@ -176,8 +175,7 @@ inet test-inet input
+   [ meta load nfproto => reg 1 ]
+   [ cmp eq reg 1 0x0000000a ]
+   [ payload load 1b @ network header + 6 => reg 1 ]
+-  [ cmp lt reg 1 0x00000021 ]
+-  [ cmp gt reg 1 0x0000002c ]
++  [ range neq reg 1 0x00000021 0x0000002c ]
+ 
+ # ip6 hoplimit 1
+ inet test-inet input
+@@ -206,8 +204,7 @@ inet test-inet input
+   [ meta load nfproto => reg 1 ]
+   [ cmp eq reg 1 0x0000000a ]
+   [ payload load 1b @ network header + 7 => reg 1 ]
+-  [ cmp lt reg 1 0x00000021 ]
+-  [ cmp gt reg 1 0x0000002d ]
++  [ range neq reg 1 0x00000021 0x0000002d ]
+ 
+ # ip6 hoplimit {33, 55, 67, 88}
+ __set%d test-inet 3
+@@ -510,6 +507,5 @@ inet test-inet input
+   [ meta load nfproto => reg 1 ]
+   [ cmp eq reg 1 0x0000000a ]
+   [ payload load 16b @ network header + 24 => reg 1 ]
+-  [ cmp lt reg 1 0x34120000 0x34123412 0x34123412 0x34123412 ]
+-  [ cmp gt reg 1 0x34123412 0x34120000 0x34123412 0x34123412 ]
++  [ range neq reg 1 0x34120000 0x34123412 0x34123412 0x34123412 0x34123412 0x34120000 0x34123412 0x34123412 ]
+ 
+diff --git a/tests/py/ip6/ip6.t.payload.ip6 b/tests/py/ip6/ip6.t.payload.ip6
+index c249923..e5eef5b 100644
+--- a/tests/py/ip6/ip6.t.payload.ip6
++++ b/tests/py/ip6/ip6.t.payload.ip6
+@@ -80,8 +80,7 @@ ip6 test-ip6 input
+ # ip6 length != 33-45
+ ip6 test-ip6 input
+   [ payload load 2b @ network header + 4 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # ip6 length { 33-55}
+ __set%d test-ip6 7
+@@ -134,8 +133,7 @@ ip6 test-ip6 input
+ # ip6 nexthdr != 33-44
+ ip6 test-ip6 input
+   [ payload load 1b @ network header + 6 => reg 1 ]
+-  [ cmp lt reg 1 0x00000021 ]
+-  [ cmp gt reg 1 0x0000002c ]
++  [ range neq reg 1 0x00000021 0x0000002c ]
+ 
+ # ip6 hoplimit 1
+ ip6 test-ip6 input
+@@ -156,8 +154,7 @@ ip6 test-ip6 input
+ # ip6 hoplimit != 33-45
+ ip6 test-ip6 input
+   [ payload load 1b @ network header + 7 => reg 1 ]
+-  [ cmp lt reg 1 0x00000021 ]
+-  [ cmp gt reg 1 0x0000002d ]
++  [ range neq reg 1 0x00000021 0x0000002d ]
+ 
+ # ip6 hoplimit {33, 55, 67, 88}
+ __set%d test-ip6 3
+@@ -376,6 +373,5 @@ ip6 test-ip6 input
+ # ip6 daddr != ::1234:1234:1234:1234:1234:1234:1234-1234:1234::1234:1234:1234:1234:1234
+ ip6 test-ip6 input
+   [ payload load 16b @ network header + 24 => reg 1 ]
+-  [ cmp lt reg 1 0x34120000 0x34123412 0x34123412 0x34123412 ]
+-  [ cmp gt reg 1 0x34123412 0x34120000 0x34123412 0x34123412 ]
++  [ range neq reg 1 0x34120000 0x34123412 0x34123412 0x34123412 0x34123412 0x34120000 0x34123412 0x34123412 ]
+ 
+diff --git a/tests/py/ip6/mh.t.payload.inet b/tests/py/ip6/mh.t.payload.inet
+index 5d06566..471af09 100644
+--- a/tests/py/ip6/mh.t.payload.inet
++++ b/tests/py/ip6/mh.t.payload.inet
+@@ -63,8 +63,7 @@ inet test-inet input
+   [ meta load nfproto => reg 1 ]
+   [ cmp eq reg 1 0x0000000a ]
+   [ exthdr load 1b @ 135 + 0 => reg 1 ]
+-  [ cmp lt reg 1 0x00000021 ]
+-  [ cmp gt reg 1 0x0000002d ]
++  [ range neq reg 1 0x00000021 0x0000002d ]
+ 
+ # mh nexthdr { 33, 55, 67, 88 }
+ __set%d test-inet 3
+@@ -113,8 +112,7 @@ inet test-inet input
+   [ meta load nfproto => reg 1 ]
+   [ cmp eq reg 1 0x0000000a ]
+   [ exthdr load 1b @ 135 + 1 => reg 1 ]
+-  [ cmp lt reg 1 0x00000021 ]
+-  [ cmp gt reg 1 0x0000002d ]
++  [ range neq reg 1 0x00000021 0x0000002d ]
+ 
+ # mh hdrlength { 33, 55, 67, 88 }
+ __set%d test-inet 3
+@@ -187,8 +185,7 @@ inet test-inet input
+   [ meta load nfproto => reg 1 ]
+   [ cmp eq reg 1 0x0000000a ]
+   [ exthdr load 1b @ 135 + 3 => reg 1 ]
+-  [ cmp lt reg 1 0x00000021 ]
+-  [ cmp gt reg 1 0x0000002d ]
++  [ range neq reg 1 0x00000021 0x0000002d ]
+ 
+ # mh reserved { 33, 55, 67, 88}
+ __set%d test-inet 3
+@@ -237,8 +234,7 @@ inet test-inet input
+   [ meta load nfproto => reg 1 ]
+   [ cmp eq reg 1 0x0000000a ]
+   [ exthdr load 2b @ 135 + 4 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # mh checksum { 33, 55, 67, 88}
+ __set%d test-inet 3
+diff --git a/tests/py/ip6/mh.t.payload.ip6 b/tests/py/ip6/mh.t.payload.ip6
+index d5366a5..7a9aa35 100644
+--- a/tests/py/ip6/mh.t.payload.ip6
++++ b/tests/py/ip6/mh.t.payload.ip6
+@@ -45,8 +45,7 @@ ip6 test-ip6 input
+ # mh nexthdr != 33-45
+ ip6 test-ip6 input
+   [ exthdr load 1b @ 135 + 0 => reg 1 ]
+-  [ cmp lt reg 1 0x00000021 ]
+-  [ cmp gt reg 1 0x0000002d ]
++  [ range neq reg 1 0x00000021 0x0000002d ]
+ 
+ # mh nexthdr { 33, 55, 67, 88 }
+ __set%d test-ip6 3
+@@ -83,8 +82,7 @@ ip6 test-ip6 input
+ # mh hdrlength != 33-45
+ ip6 test-ip6 input
+   [ exthdr load 1b @ 135 + 1 => reg 1 ]
+-  [ cmp lt reg 1 0x00000021 ]
+-  [ cmp gt reg 1 0x0000002d ]
++  [ range neq reg 1 0x00000021 0x0000002d ]
+ 
+ # mh hdrlength { 33, 55, 67, 88 }
+ __set%d test-ip6 3
+@@ -139,8 +137,7 @@ ip6 test-ip6 input
+ # mh reserved != 33-45
+ ip6 test-ip6 input
+   [ exthdr load 1b @ 135 + 3 => reg 1 ]
+-  [ cmp lt reg 1 0x00000021 ]
+-  [ cmp gt reg 1 0x0000002d ]
++  [ range neq reg 1 0x00000021 0x0000002d ]
+ 
+ # mh reserved { 33, 55, 67, 88}
+ __set%d test-ip6 3
+@@ -177,8 +174,7 @@ ip6 test-ip6 input
+ # mh checksum != 33-45
+ ip6 test-ip6 input
+   [ exthdr load 2b @ 135 + 4 => reg 1 ]
+-  [ cmp lt reg 1 0x00002100 ]
+-  [ cmp gt reg 1 0x00002d00 ]
++  [ range neq reg 1 0x00002100 0x00002d00 ]
+ 
+ # mh checksum { 33, 55, 67, 88}
+ __set%d test-ip6 3
+diff --git a/tests/py/ip6/rt.t.payload.inet b/tests/py/ip6/rt.t.payload.inet
+index 7d644fb..30e29a5 100644
+--- a/tests/py/ip6/rt.t.payload.inet
++++ b/tests/py/ip6/rt.t.payload.inet
+@@ -63,8 +63,7 @@ inet test-inet input
+   [ meta load nfproto => reg 1 ]
+   [ cmp eq reg 1 0x0000000a ]
+   [ exthdr load 1b @ 43 + 0 => reg 1 ]
+-  [ cmp lt reg 1 0x00000021 ]
+-  [ cmp gt reg 1 0x0000002d ]
++  [ range neq reg 1 0x00000021 0x0000002d ]
+ 
+ # rt nexthdr { 33, 55, 67, 88}
+ __set%d test-inet 3
+@@ -113,8 +112,7 @@ inet test-inet input
+   [ meta load nfproto => reg 1 ]
+   [ cmp eq reg 1 0x0000000a ]
+   [ exthdr load 1b @ 43 + 1 => reg 1 ]
+-  [ cmp lt reg 1 0x00000021 ]
+-  [ cmp gt reg 1 0x0000002d ]
++  [ range neq reg 1 0x00000021 0x0000002d ]
+ 
+ # rt hdrlength { 33, 55, 67, 88}
+ __set%d test-inet 3
+@@ -163,8 +161,7 @@ inet test-inet input
+   [ meta load nfproto => reg 1 ]
+   [ cmp eq reg 1 0x0000000a ]
+   [ exthdr load 1b @ 43 + 2 => reg 1 ]
+-  [ cmp lt reg 1 0x00000021 ]
+-  [ cmp gt reg 1 0x0000002d ]
++  [ range neq reg 1 0x00000021 0x0000002d ]
+ 
+ # rt type { 33, 55, 67, 88}
+ __set%d test-inet 3
+@@ -213,8 +210,7 @@ inet test-inet input
+   [ meta load nfproto => reg 1 ]
+   [ cmp eq reg 1 0x0000000a ]
+   [ exthdr load 1b @ 43 + 3 => reg 1 ]
+-  [ cmp lt reg 1 0x00000021 ]
+-  [ cmp gt reg 1 0x0000002d ]
++  [ range neq reg 1 0x00000021 0x0000002d ]
+ 
+ # rt seg-left { 33, 55, 67, 88}
+ __set%d test-inet 3
+diff --git a/tests/py/ip6/rt.t.payload.ip6 b/tests/py/ip6/rt.t.payload.ip6
+index 3245725..b96980b 100644
+--- a/tests/py/ip6/rt.t.payload.ip6
++++ b/tests/py/ip6/rt.t.payload.ip6
+@@ -45,8 +45,7 @@ ip6 test-ip6 input
+ # rt nexthdr != 33-45
+ ip6 test-ip6 input
+   [ exthdr load 1b @ 43 + 0 => reg 1 ]
+-  [ cmp lt reg 1 0x00000021 ]
+-  [ cmp gt reg 1 0x0000002d ]
++  [ range neq reg 1 0x00000021 0x0000002d ]
+ 
+ # rt nexthdr { 33, 55, 67, 88}
+ __set%d test-ip6 3
+@@ -83,8 +82,7 @@ ip6 test-ip6 input
+ # rt hdrlength != 33-45
+ ip6 test-ip6 input
+   [ exthdr load 1b @ 43 + 1 => reg 1 ]
+-  [ cmp lt reg 1 0x00000021 ]
+-  [ cmp gt reg 1 0x0000002d ]
++  [ range neq reg 1 0x00000021 0x0000002d ]
+ 
+ # rt hdrlength { 33, 55, 67, 88}
+ __set%d test-ip6 3
+@@ -121,8 +119,7 @@ ip6 test-ip6 input
+ # rt type != 33-45
+ ip6 test-ip6 input
+   [ exthdr load 1b @ 43 + 2 => reg 1 ]
+-  [ cmp lt reg 1 0x00000021 ]
+-  [ cmp gt reg 1 0x0000002d ]
++  [ range neq reg 1 0x00000021 0x0000002d ]
+ 
+ # rt type { 33, 55, 67, 88}
+ __set%d test-ip6 3
+@@ -159,8 +156,7 @@ ip6 test-ip6 input
+ # rt seg-left != 33-45
+ ip6 test-ip6 input
+   [ exthdr load 1b @ 43 + 3 => reg 1 ]
+-  [ cmp lt reg 1 0x00000021 ]
+-  [ cmp gt reg 1 0x0000002d ]
++  [ range neq reg 1 0x00000021 0x0000002d ]
+ 
+ # rt seg-left { 33, 55, 67, 88}
+ __set%d test-ip6 3
+-- 
+1.8.3.1
+

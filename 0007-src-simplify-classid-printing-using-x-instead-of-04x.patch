@@ -1,0 +1,47 @@
+From 0987bd768b0f9f8e3190fd955d01e54e0d4465e0 Mon Sep 17 00:00:00 2001
+From: Phil Sutter <psutter@redhat.com>
+Date: Fri, 12 May 2017 17:56:59 +0200
+Subject: [PATCH] src: simplify classid printing using %x instead of %04x
+
+Bugzilla: https://bugzilla.redhat.com/show_bug.cgi?id=1380326
+Upstream Status: nftables commit 860979abdbe30
+
+commit 860979abdbe3081c310a5acd9250abdfcb741ce4
+Author: Pablo Neira Ayuso <pablo@netfilter.org>
+Date:   Fri Jul 22 16:45:57 2016 +0200
+
+    src: simplify classid printing using %x instead of %04x
+
+    No need to print this in iptables CLASSIFY target format,
+    eg. 0004:1230, this is innecessarily large.
+
+    And always print major and minor numbers.
+
+    Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>
+---
+ src/meta.c | 9 +--------
+ 1 file changed, 1 insertion(+), 8 deletions(-)
+
+diff --git a/src/meta.c b/src/meta.c
+index d912b4e..3a72d10 100644
+--- a/src/meta.c
++++ b/src/meta.c
+@@ -80,14 +80,7 @@ static void tchandle_type_print(const struct expr *expr)
+ 		printf("none");
+ 		break;
+ 	default:
+-		if (TC_H_MAJ(handle) == 0)
+-			printf(":%04x", TC_H_MIN(handle));
+-		else if (TC_H_MIN(handle) == 0)
+-			printf("%04x:", TC_H_MAJ(handle) >> 16);
+-		else {
+-			printf("%04x:%04x",
+-			       TC_H_MAJ(handle) >> 16, TC_H_MIN(handle));
+-		}
++		printf("%0x:%0x", TC_H_MAJ(handle) >> 16, TC_H_MIN(handle));
+ 		break;
+ 	}
+ }
+-- 
+1.8.3.1
+
