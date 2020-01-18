@@ -5,7 +5,7 @@
 \\$2 \(la\\$1\(ra\\$3
 ..
 .if \n(.g .mso www.tmac
-.TH nft 8 "4 April 2019" "" ""
+.TH nft 8 "13 October 2017" "" ""
 .SH NAME
 nft \- Administration tool for packet filtering and classification 
 .SH SYNOPSIS
@@ -295,6 +295,12 @@ T}
 {list | flush} \fBruleset\fR [\fIfamily\fR]
 .ad b
 'hy
+'nh
+.fi
+.ad l
+{export} [\fBruleset\fR] {\fIformat\fR}
+.ad b
+'hy
 .PP
 The \fBruleset\fR keyword is used to identify the whole
 set of tables, chains, etc. currently in place in kernel. The
@@ -309,14 +315,21 @@ will remove all tables and whatever they contain,
 effectively leading to an empty ruleset - no packet
 filtering will happen anymore, so the kernel accepts any
 valid packet it receives.
+.TP 
+\*(T<\fBexport\fR\*(T>
+Print the ruleset in machine readable format. The
+mandatory \fIformat\fR parameter
+may be either \*(T<xml\*(T> or
+\*(T<json\*(T>.
 .PP
 It is possible to limit \fBlist\fR and
 \fBflush\fR to a specific address family only. For a
 list of valid family names, see \*(T<ADDRESS FAMILIES\*(T> above.
 .PP
-By design, \fBlist ruleset\fR command output may be used as
-input to \fBnft -f\fR. Effectively, this is the nft-equivalent
-of \fBiptables-save\fR and \fBiptables-restore\fR.
+Note that contrary to what one might assume, the output generated
+by \fBexport\fR is not parseable by
+\fBnft -f\fR. Instead, the output of
+\fBlist\fR command serves well for that purpose.
 .SH TABLES
 'nh
 .fi
@@ -472,10 +485,7 @@ Base chains also allow to set the chain's \*(T<policy\*(T>, i.e. what happens to
 'nh
 .fi
 .ad l
-[add | insert] \fBrule\fR [\fIfamily\fR] {\fItable\fR} {\fIchain\fR} [
-{handle | position}
-\fIhandle\fR
-] {\fIstatement\fR}\&...
+[add | insert] \fBrule\fR [\fIfamily\fR] {\fItable\fR} {\fIchain\fR} [position \fIposition\fR] {\fIstatement\fR}\&...
 .ad b
 'hy
 'nh
@@ -496,15 +506,12 @@ of grammatical rules: expressions and statements.
 .TP 
 \*(T<\fBadd\fR\*(T>
 Add a new rule described by the list of statements. The rule is appended to the
-given chain unless a \*(T<handle\*(T> is specified, in which case the
-rule is appended to the rule given by the \fIhandle\fR.
-The alternative name \*(T<position\*(T> is deprecated and should not be
-used anymore.
+given chain unless a position is specified, in which case the rule is appended to
+the rule given by the position.
 .TP 
 \*(T<\fBinsert\fR\*(T>
 Similar to the \fBadd\fR command, but the rule is prepended to the
-beginning of the chain or before the rule with the given
-\fIhandle\fR.
+beginning of the chain or before the rule at the given position.
 .TP 
 \*(T<\fBreplace\fR\*(T>
 Similar to the \fBadd\fR command, but the rule replaces the specified rule.
@@ -2227,9 +2234,8 @@ T}
 T{
 pkt_type
 T}	T{
-Packet type: \*(T<host\*(T> (addressed to local host),
-\*(T<broadcast\*(T> (to all), \*(T<multicast\*(T> (to group),
-\*(T<other\*(T> (addressed to another host).
+Packet type: Unicast (addressed to local host),
+Broadcast (to all), Multicast (to group).
 T}
 .TE
 .PP
@@ -4024,9 +4030,9 @@ ip6 filter output log flags all
 'in \n(.iu+\nxu
 [
 with
-{icmp | icmpv6 | icmpx}
+{icmp | icmp6 | icmpx}
 type
-{icmp_code | icmpv6_code | icmpx_code}
+{icmp_type | icmp6_type | icmpx_type}
 ]
 'in \n(.iu-\nxu
 .ad b
@@ -4071,7 +4077,7 @@ T}	T{
 icmp_code
 T}
 T{
-icmpv6
+icmp6
 T}	T{
 ip6
 T}	T{
@@ -4595,59 +4601,6 @@ T}	T{
 Distribute packets between several queues.
 T}
 .TE
-.SS "MAP STATEMENT"
-The map statement is used to lookup data based on some specific input key.
-.PP
-'nh
-.fi
-.ad l
-\fIexpression\fR \fBmap {\fR \fIkey\fR \fB:\fR \fIvalue\fR [
-\fB,\fR
-\fIkey\fR
-\fB:\fR
-\fIvalue\fR
-]\&... \fB}\fR
-.ad b
-'hy
-.PP
-\fBusing the map statement\fR
-.PP
-.nf
-\*(T<
-# select DNAT target based on TCP dport:
-# connections to port 80 are redirected to 192.168.1.100,
-# connections to port 8888 are redirected to 192.168.1.101
-nft add rule ip nat prerouting dnat tcp dport map { 80 : 192.168.1.100, 8888 : 192.168.1.101 }
-
-# source address based SNAT:
-# packets from net 192.168.1.0/24 will appear as originating from 10.0.0.1,
-# packets from net 192.168.2.0/24 will appear as originating from 10.0.0.2
-nft add rule ip nat postrouting snat to ip saddr map { 192.168.1.0/24 : 10.0.0.1, 192.168.2.0/24 : 10.0.0.2 }
-				\*(T>
-.fi
-.SS "VMAP STATEMENT"
-The verdict map (vmap) statement works analogous to the map statement, but contains verdicts as values.
-.PP
-'nh
-.fi
-.ad l
-\fIexpression\fR \fBvmap {\fR \fIkey\fR \fB:\fR \fIvalue\fR [
-\fB,\fR
-\fIkey\fR
-\fB:\fR
-\fIvalue\fR
-]\&... \fB}\fR
-.ad b
-'hy
-.PP
-\fBusing the vmap statement\fR
-.PP
-.nf
-\*(T<
-# jump to different chains depending on layer 4 protocol type:
-nft add rule ip filter input ip protocol vmap { tcp : jump tcp\-chain, udp : jump udp\-chain , icmp : jump icmp\-chain }
-				\*(T>
-.fi
 .SH "ADDITIONAL COMMANDS"
 These are some additional commands included in nft.
 .SS MONITOR

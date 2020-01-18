@@ -1,11 +1,10 @@
 %define rpmversion 0.8
-%define specrelease 14%{?dist}
+%define specrelease 7%{?dist}
 %define libnftnlversion 1.0.8-1
 
 Name:           nftables
 Version:        %{rpmversion}
 Release:        %{specrelease}
-Epoch:          1
 Summary:        Netfilter Tables userspace utillites
 License:        GPLv2
 URL:            http://netfilter.org/projects/nftables/
@@ -25,26 +24,6 @@ BuildRequires:  libnftnl-devel >= %{libnftnlversion}
 BuildRequires:  systemd
 Patch0:             0001-src-fix-protocol-context-update-on-big-endian-system.patch
 Patch1:             0002-netlink_linearize-exthdr-op-must-be-u32.patch
-Patch2:             0003-src-avoid-errouneous-assert-with-map-concat.patch
-Patch3:             0004-Review-switch-statements-for-unmarked-fall-through-c.patch
-Patch4:             0005-monitor-Make-trace-events-respect-output_fp.patch
-Patch5:             0006-monitor-Make-JSON-XML-output-respect-output_fp.patch
-Patch6:             0007-cli-Drop-pointless-check-in-cli_append_multiline.patch
-Patch7:             0008-erec-Avoid-passing-negative-offset-to-fseek.patch
-Patch8:             0009-evaluate-Fix-memleak-in-stmt_reject_gen_dependency.patch
-Patch9:             0010-hash-Fix-potential-null-pointer-dereference-in-hash_.patch
-Patch10:            0011-netlink-Complain-if-setting-O_NONBLOCK-fails.patch
-Patch11:            0012-netlink_delinearize-Fix-resource-leaks.patch
-Patch12:            0013-nft.8-Fix-reject-statement-documentation.patch
-Patch13:            0014-doc-reword-insert-position-this-expects-rule-handle-.patch
-Patch14:            0015-Deprecate-add-insert-rule-position-argument.patch
-Patch15:            0016-evaluate-explicitly-deny-concatenated-types-in-inter.patch
-Patch16:            0017-src-bail-out-when-exporting-ruleset-with-unsupported.patch
-Patch17:            0018-monitor-Drop-fake-XML-support.patch
-Patch18:            0019-src-Reject-export-vm-json-command.patch
-Patch19:            0020-include-fix-build-failure.patch
-Patch20:            0021-nft.8-Update-meta-pkt_type-value-description.patch
-Patch21:            0022-doc-Add-minimal-description-of-v-map-statements.patch
 
 %description
 Netfilter Tables userspace utilities.
@@ -93,42 +72,6 @@ chmod 600 $RPM_BUILD_ROOT/%{_sysconfdir}/nftables/*
 %{_unitdir}/nftables.service
 
 %changelog
-* Thu Apr 04 2019 Phil Sutter <psutter@redhat.com> [0.8-14.el7]
-- Update pre-generated nft.8 (Phil Sutter) [1628974]
-
-* Thu Apr 04 2019 Phil Sutter <psutter@redhat.com> [0.8-13.el7]
-- doc: Add minimal description of (v)map statements (Phil Sutter) [1628974]
-- nft.8: Update meta pkt_type value description (Phil Sutter) [1628694]
-
-* Fri Mar 15 2019 Phil Sutter <psutter@redhat.com> [0.8-12.el7]
-- include: fix build failure (Phil Sutter) [1646336]
-
-* Fri Mar 15 2019 Phil Sutter <psutter@redhat.com> [0.8-11.el7]
-- src: Reject 'export vm json' command (Phil Sutter) [1646336]
-- monitor: Drop fake XML support (Phil Sutter) [1646336]
-- src: bail out when exporting ruleset with unsupported output (Phil Sutter) [1646336]
-
-* Wed Jun 20 2018 Phil Sutter <psutter@redhat.com> [0.8-10.el7]
-- Bump epoch to allow upgrading from EPEL (Phil Sutter) [1575059]
-
-* Wed Jun 20 2018 Phil Sutter <psutter@redhat.com> [0.8-9.el7]
-- evaluate: explicitly deny concatenated types in interval sets (Phil Sutter) [1576426]
-- Deprecate add/insert rule 'position' argument (Phil Sutter) [1571968]
-- doc: reword insert position, this expects rule handle to insert, not a relative postition (Phil Sutter) [1571968]
-- nft.8: Fix reject statement documentation (Phil Sutter) [1571938]
-- netlink_delinearize: Fix resource leaks (Phil Sutter) [1504157]
-- netlink: Complain if setting O_NONBLOCK fails (Phil Sutter) [1504157]
-- hash: Fix potential null-pointer dereference in hash_expr_cmp() (Phil Sutter) [1504157]
-- evaluate: Fix memleak in stmt_reject_gen_dependency() (Phil Sutter) [1504157]
-- erec: Avoid passing negative offset to fseek() (Phil Sutter) [1504157]
-- cli: Drop pointless check in cli_append_multiline() (Phil Sutter) [1504157]
-- monitor: Make JSON/XML output respect output_fp (Phil Sutter) [1504157]
-- monitor: Make trace events respect output_fp (Phil Sutter) [1504157]
-- Review switch statements for unmarked fall through cases (Phil Sutter) [1504157]
-
-* Wed Jun 06 2018 Phil Sutter <psutter@redhat.com> [0.8-8.el7]
-- src: avoid errouneous assert with map+concat (Phil Sutter) [1540917]
-
 * Mon Dec 18 2017 Phil Sutter <psutter@redhat.com> [0.8-7.el7]
 - A proper fix for incompatible docbook2man (Phil Sutter) [1523239]
 
