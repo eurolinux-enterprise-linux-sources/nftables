@@ -1,0 +1,54 @@
+From d8f1860f72840104bff3742f477c572b57a9c3c1 Mon Sep 17 00:00:00 2001
+From: Phil Sutter <psutter@redhat.com>
+Date: Wed, 20 Jun 2018 09:38:55 +0200
+Subject: [PATCH] evaluate: explicitly deny concatenated types in interval sets
+
+Bugzilla: https://bugzilla.redhat.com/show_bug.cgi?id=1576426
+Upstream Status: nftables commit 9a3d80172a61e
+
+commit 9a3d80172a61e89c2862bcf41cb58313c236b308
+Author: Phil Sutter <phil@nwl.cc>
+Date:   Wed Jun 6 13:21:49 2018 +0200
+
+    evaluate: explicitly deny concatenated types in interval sets
+
+    Previously, this triggered a program abort:
+
+    | # nft add table ip t
+    | # nft add set ip t my_set '{ type ipv4_addr . inet_service ; flags interval ; }'
+    | # nft add element ip t my_set '{10.0.0.1 . tcp }'
+    | BUG: invalid range expression type concat
+    | nft: expression.c:1085: range_expr_value_low: Assertion `0' failed.
+
+    With this patch in place, the 'add set' command above gives an error
+    message:
+
+    | # nft add set ip t my_set3 '{ type ipv4_addr . inet_service ; flags interval ; }'
+    | Error: concatenated types not supported in interval sets
+    | add set ip t my_set3 { type ipv4_addr . inet_service ; flags interval ; }
+    |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+    Signed-off-by: Phil Sutter <phil@nwl.cc>
+    Signed-off-by: Florian Westphal <fw@strlen.de>
+---
+ src/evaluate.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/src/evaluate.c b/src/evaluate.c
+index 8552e4a..ab1347f 100644
+--- a/src/evaluate.c
++++ b/src/evaluate.c
+@@ -2865,6 +2865,10 @@ static int set_evaluate(struct eval_ctx *ctx, struct set *set)
+ 					 "specified in %s definition",
+ 					 set->key->dtype->name, type);
+ 	}
++	if (set->flags & NFT_SET_INTERVAL &&
++	    set->key->ops->type == EXPR_CONCAT)
++		return set_error(ctx, set, "concatenated types not supported in interval sets");
++
+ 	if (set->flags & NFT_SET_MAP) {
+ 		if (set->datatype == NULL)
+ 			return set_error(ctx, set, "map definition does not "
+-- 
+1.8.3.1
+

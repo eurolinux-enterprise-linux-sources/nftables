@@ -1,0 +1,48 @@
+From d0d83585f7f6a74ac02338a37c6860cd2f26b33b Mon Sep 17 00:00:00 2001
+From: Phil Sutter <psutter@redhat.com>
+Date: Thu, 14 Dec 2017 14:18:17 +0100
+Subject: [PATCH] netlink_linearize: exthdr op must be u32
+
+Bugzilla: https://bugzilla.redhat.com/show_bug.cgi?id=1524246
+Upstream Status: nftables commit 80f5d7fd66895
+
+commit 80f5d7fd66895c651c9d1e35b2353f3020ffb538
+Author: Florian Westphal <fw@strlen.de>
+Date:   Mon Dec 11 10:06:55 2017 +0100
+
+    netlink_linearize: exthdr op must be u32
+
+    libnftnl casts this to u32. Broke exthdr expressions on bigendian.
+
+    Reported-by: Li Shuang <shuali@redhat.com>
+    Signed-off-by: Florian Westphal <fw@strlen.de>
+    Acked-by: Pablo Neira Ayuso <pablo@netfilter.org>
+---
+ src/netlink_linearize.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/netlink_linearize.c b/src/netlink_linearize.c
+index fb2d250..a268dcc 100644
+--- a/src/netlink_linearize.c
++++ b/src/netlink_linearize.c
+@@ -178,7 +178,7 @@ static void netlink_gen_exthdr(struct netlink_linearize_ctx *ctx,
+ 	nftnl_expr_set_u32(nle, NFTNL_EXPR_EXTHDR_OFFSET, offset / BITS_PER_BYTE);
+ 	nftnl_expr_set_u32(nle, NFTNL_EXPR_EXTHDR_LEN,
+ 			   div_round_up(expr->len, BITS_PER_BYTE));
+-	nftnl_expr_set_u8(nle, NFTNL_EXPR_EXTHDR_OP, expr->exthdr.op);
++	nftnl_expr_set_u32(nle, NFTNL_EXPR_EXTHDR_OP, expr->exthdr.op);
+ 	nftnl_expr_set_u32(nle, NFTNL_EXPR_EXTHDR_FLAGS, expr->exthdr.flags);
+ 	nftnl_rule_add_expr(ctx->nlr, nle);
+ }
+@@ -839,7 +839,7 @@ static void netlink_gen_exthdr_stmt(struct netlink_linearize_ctx *ctx,
+ 	nftnl_expr_set_u32(nle, NFTNL_EXPR_EXTHDR_OFFSET, offset / BITS_PER_BYTE);
+ 	nftnl_expr_set_u32(nle, NFTNL_EXPR_EXTHDR_LEN,
+ 			   div_round_up(expr->len, BITS_PER_BYTE));
+-	nftnl_expr_set_u8(nle, NFTNL_EXPR_EXTHDR_OP, expr->exthdr.op);
++	nftnl_expr_set_u32(nle, NFTNL_EXPR_EXTHDR_OP, expr->exthdr.op);
+ 	nftnl_rule_add_expr(ctx->nlr, nle);
+ }
+ 
+-- 
+1.8.3.1
+

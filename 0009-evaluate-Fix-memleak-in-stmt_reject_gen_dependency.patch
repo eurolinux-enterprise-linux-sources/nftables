@@ -1,0 +1,60 @@
+From 56d8528fdd3c3f7db138622d94d2a6bac6b46e4e Mon Sep 17 00:00:00 2001
+From: Phil Sutter <psutter@redhat.com>
+Date: Wed, 20 Jun 2018 09:22:47 +0200
+Subject: [PATCH] evaluate: Fix memleak in stmt_reject_gen_dependency()
+
+Bugzilla: https://bugzilla.redhat.com/show_bug.cgi?id=1504157
+Upstream Status: nftables commit edcf3adcf4c4c
+
+commit edcf3adcf4c4cf58cb0b965b984a512b12181a58
+Author: Phil Sutter <phil@nwl.cc>
+Date:   Thu Mar 1 15:00:29 2018 +0100
+
+    evaluate: Fix memleak in stmt_reject_gen_dependency()
+
+    The allocated payload expression is not used after returning from that
+    function, so it needs to be freed again.
+
+    Simple test case:
+
+    | nft add rule inet t c reject with tcp reset
+
+    Valgrind reports definitely lost 144 bytes.
+
+    Signed-off-by: Phil Sutter <phil@nwl.cc>
+    Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>
+---
+ src/evaluate.c | 10 +++++++---
+ 1 file changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/src/evaluate.c b/src/evaluate.c
+index 25a7376..8552e4a 100644
+--- a/src/evaluate.c
++++ b/src/evaluate.c
+@@ -2136,8 +2136,10 @@ static int stmt_reject_gen_dependency(struct eval_ctx *ctx, struct stmt *stmt,
+ 	if (ret <= 0)
+ 		return ret;
+ 
+-	if (payload_gen_dependency(ctx, payload, &nstmt) < 0)
+-		return -1;
++	if (payload_gen_dependency(ctx, payload, &nstmt) < 0) {
++		ret = -1;
++		goto out;
++	}
+ 
+ 	/*
+ 	 * Unlike payload deps this adds the dependency at the beginning, i.e.
+@@ -2148,7 +2150,9 @@ static int stmt_reject_gen_dependency(struct eval_ctx *ctx, struct stmt *stmt,
+ 	 * Otherwise we'd log things that won't be rejected.
+ 	 */
+ 	list_add(&nstmt->list, &ctx->rule->stmts);
+-	return 0;
++out:
++	xfree(payload);
++	return ret;
+ }
+ 
+ static int stmt_evaluate_reject_inet_family(struct eval_ctx *ctx,
+-- 
+1.8.3.1
+

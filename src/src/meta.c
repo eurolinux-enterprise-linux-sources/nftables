@@ -10,6 +10,8 @@
  * Development of this code funded by Astaro AG (http://www.astaro.com/)
  */
 
+#include <errno.h>
+#include <limits.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -35,59 +37,32 @@
 #include <iface.h>
 
 static struct symbol_table *realm_tbl;
-static void __init realm_table_init(void)
+void realm_table_meta_init(void)
 {
 	realm_tbl = rt_symbol_table_init("/etc/iproute2/rt_realms");
 }
 
-static void __exit realm_table_exit(void)
+void realm_table_meta_exit(void)
 {
 	rt_symbol_table_free(realm_tbl);
 }
 
-static void realm_type_print(const struct expr *expr)
-{
-	return symbolic_constant_print(realm_tbl, expr);
-}
-
-static struct error_record *realm_type_parse(const struct expr *sym,
-					     struct expr **res)
-{
-	return symbolic_constant_parse(sym, realm_tbl, res);
-}
-
-static const struct datatype realm_type = {
-	.type		= TYPE_REALM,
-	.name		= "realm",
-	.desc		= "routing realm",
-	.byteorder	= BYTEORDER_HOST_ENDIAN,
-	.size		= 4 * BITS_PER_BYTE,
-	.basetype	= &integer_type,
-	.print		= realm_type_print,
-	.parse		= realm_type_parse,
-	.flags		= DTYPE_F_PREFIX,
-};
-
-static void tchandle_type_print(const struct expr *expr)
+static void tchandle_type_print(const struct expr *expr,
+				struct output_ctx *octx)
 {
 	uint32_t handle = mpz_get_uint32(expr->value);
 
 	switch(handle) {
 	case TC_H_ROOT:
-		printf("root");
+		nft_print(octx, "root");
 		break;
 	case TC_H_UNSPEC:
-		printf("none");
+		nft_print(octx, "none");
 		break;
 	default:
-		if (TC_H_MAJ(handle) == 0)
-			printf(":%04x", TC_H_MIN(handle));
-		else if (TC_H_MIN(handle) == 0)
-			printf("%04x:", TC_H_MAJ(handle) >> 16);
-		else {
-			printf("%04x:%04x",
-			       TC_H_MAJ(handle) >> 16, TC_H_MIN(handle));
-		}
+		nft_print(octx, "%0x:%0x",
+			  TC_H_MAJ(handle) >> 16,
+			  TC_H_MIN(handle));
 		break;
 	}
 }
@@ -96,40 +71,57 @@ static struct error_record *tchandle_type_parse(const struct expr *sym,
 						struct expr **res)
 {
 	uint32_t handle;
+	char *str = NULL;
 
 	if (strcmp(sym->identifier, "root") == 0)
 		handle = TC_H_ROOT;
 	else if (strcmp(sym->identifier, "none") == 0)
 		handle = TC_H_UNSPEC;
-	else if (sym->identifier[0] == ':') {
-		if (sscanf(sym->identifier, ":%04x", &handle) != 1)
-			goto err;
-	} else if (sym->identifier[strlen(sym->identifier)-1] == ':') {
-		if (sscanf(sym->identifier, "%04x:", &handle) != 1)
+	else if (strchr(sym->identifier, ':')) {
+		uint16_t tmp;
+		char *colon;
+
+		str = xstrdup(sym->identifier);
+
+		colon = strchr(str, ':');
+		if (!colon)
 			goto err;
 
-		handle <<= 16;
+		*colon = '\0';
+
+		errno = 0;
+		tmp = strtoull(str, NULL, 16);
+		if (errno != 0)
+			goto err;
+
+		handle = (tmp << 16);
+		if (str[strlen(str) - 1] == ':')
+			goto out;
+
+		errno = 0;
+		tmp = strtoull(colon + 1, NULL, 16);
+		if (errno != 0)
+			goto err;
+
+		handle |= tmp;
 	} else {
-		uint32_t min, max;
-
-		if (sscanf(sym->identifier, "%04x:%04x", &max, &min) != 2)
-			goto err;
-
-		handle = max << 16 | min;
+		handle = strtoull(sym->identifier, NULL, 0);
 	}
+out:
+	xfree(str);
 	*res = constant_expr_alloc(&sym->location, sym->dtype,
 				   BYTEORDER_HOST_ENDIAN,
 				   sizeof(handle) * BITS_PER_BYTE, &handle);
 	return NULL;
 err:
-	return error(&sym->location, "Could not parse %s",
-		     sym->dtype->desc);
+	xfree(str);
+	return error(&sym->location, "Could not parse %s", sym->dtype->desc);
 }
 
-static const struct datatype tchandle_type = {
-	.type		= TYPE_TC_HANDLE,
-	.name		= "tc_handle",
-	.desc		= "TC handle",
+const struct datatype tchandle_type = {
+	.type		= TYPE_CLASSID,
+	.name		= "classid",
+	.desc		= "TC classid",
 	.byteorder	= BYTEORDER_HOST_ENDIAN,
 	.size		= 4 * BITS_PER_BYTE,
 	.basetype	= &integer_type,
@@ -137,16 +129,16 @@ static const struct datatype tchandle_type = {
 	.parse		= tchandle_type_parse,
 };
 
-static void ifindex_type_print(const struct expr *expr)
+static void ifindex_type_print(const struct expr *expr, struct output_ctx *octx)
 {
 	char name[IFNAMSIZ];
 	int ifindex;
 
 	ifindex = mpz_get_uint32(expr->value);
 	if (nft_if_indextoname(ifindex, name))
-		printf("%s", name);
+		nft_print(octx, "\"%s\"", name);
 	else
-		printf("%d", ifindex);
+		nft_print(octx, "%d", ifindex);
 }
 
 static struct error_record *ifindex_type_parse(const struct expr *sym,
@@ -155,8 +147,18 @@ static struct error_record *ifindex_type_parse(const struct expr *sym,
 	int ifindex;
 
 	ifindex = nft_if_nametoindex(sym->identifier);
-	if (ifindex == 0)
-		return error(&sym->location, "Interface does not exist");
+	if (ifindex == 0) {
+		char *end;
+		long res;
+
+		errno = 0;
+		res = strtol(sym->identifier, &end, 10);
+
+		if (res < 0 || res > INT_MAX || *end || errno)
+			return error(&sym->location, "Interface does not exist");
+
+		ifindex = (int)res;
+	}
 
 	*res = constant_expr_alloc(&sym->location, sym->dtype,
 				   BYTEORDER_HOST_ENDIAN,
@@ -176,6 +178,7 @@ const struct datatype ifindex_type = {
 };
 
 static const struct symbol_table arphrd_tbl = {
+	.base		= BASE_HEXADECIMAL,
 	.symbols	= {
 		SYMBOL("ether",		ARPHRD_ETHER),
 		SYMBOL("ppp",		ARPHRD_PPP),
@@ -199,21 +202,21 @@ const struct datatype arphrd_type = {
 	.sym_tbl	= &arphrd_tbl,
 };
 
-static void uid_type_print(const struct expr *expr)
+static void uid_type_print(const struct expr *expr, struct output_ctx *octx)
 {
 	struct passwd *pw;
 
-	if (numeric_output < NUMERIC_ALL) {
+	if (octx->numeric < NUMERIC_ALL) {
 		uint32_t uid = mpz_get_uint32(expr->value);
 
 		pw = getpwuid(uid);
 		if (pw != NULL)
-			printf("%s", pw->pw_name);
+			nft_print(octx, "\"%s\"", pw->pw_name);
 		else
-			printf("%d", uid);
+			nft_print(octx, "%d", uid);
 		return;
 	}
-	expr_basetype(expr)->print(expr);
+	expr_basetype(expr)->print(expr, octx);
 }
 
 static struct error_record *uid_type_parse(const struct expr *sym,
@@ -240,7 +243,7 @@ static struct error_record *uid_type_parse(const struct expr *sym,
 	return NULL;
 }
 
-static const struct datatype uid_type = {
+const struct datatype uid_type = {
 	.type		= TYPE_UID,
 	.name		= "uid",
 	.desc		= "user ID",
@@ -251,21 +254,21 @@ static const struct datatype uid_type = {
 	.parse		= uid_type_parse,
 };
 
-static void gid_type_print(const struct expr *expr)
+static void gid_type_print(const struct expr *expr, struct output_ctx *octx)
 {
 	struct group *gr;
 
-	if (numeric_output < NUMERIC_ALL) {
+	if (octx->numeric < NUMERIC_ALL) {
 		uint32_t gid = mpz_get_uint32(expr->value);
 
 		gr = getgrgid(gid);
 		if (gr != NULL)
-			printf("%s", gr->gr_name);
+			nft_print(octx, "\"%s\"", gr->gr_name);
 		else
-			printf("%u", gid);
+			nft_print(octx, "%u", gid);
 		return;
 	}
-	expr_basetype(expr)->print(expr);
+	expr_basetype(expr)->print(expr, octx);
 }
 
 static struct error_record *gid_type_parse(const struct expr *sym,
@@ -292,7 +295,7 @@ static struct error_record *gid_type_parse(const struct expr *sym,
 	return NULL;
 }
 
-static const struct datatype gid_type = {
+const struct datatype gid_type = {
 	.type		= TYPE_GID,
 	.name		= "gid",
 	.desc		= "group ID",
@@ -304,20 +307,23 @@ static const struct datatype gid_type = {
 };
 
 static const struct symbol_table pkttype_type_tbl = {
+	.base		= BASE_DECIMAL,
 	.symbols	= {
-		SYMBOL("unicast", PACKET_HOST),
+		SYMBOL("host", PACKET_HOST),
+		SYMBOL("unicast", PACKET_HOST), /* backwards compat */
 		SYMBOL("broadcast", PACKET_BROADCAST),
 		SYMBOL("multicast", PACKET_MULTICAST),
+		SYMBOL("other", PACKET_OTHERHOST),
 		SYMBOL_LIST_END,
 	},
 };
 
-static void pkttype_type_print(const struct expr *expr)
+static void pkttype_type_print(const struct expr *expr, struct output_ctx *octx)
 {
-	return symbolic_constant_print(&pkttype_type_tbl, expr);
+	return symbolic_constant_print(&pkttype_type_tbl, expr, false, octx);
 }
 
-static const struct datatype pkttype_type = {
+const struct datatype pkttype_type = {
 	.type		= TYPE_PKTTYPE,
 	.name		= "pkt_type",
 	.desc		= "packet type",
@@ -329,19 +335,20 @@ static const struct datatype pkttype_type = {
 };
 
 static struct symbol_table *devgroup_tbl;
-static void __init devgroup_table_init(void)
+void devgroup_table_init(void)
 {
 	devgroup_tbl = rt_symbol_table_init("/etc/iproute2/group");
 }
 
-static void __exit devgroup_table_exit(void)
+void devgroup_table_exit(void)
 {
 	rt_symbol_table_free(devgroup_tbl);
 }
 
-static void devgroup_type_print(const struct expr *expr)
+static void devgroup_type_print(const struct expr *expr,
+				 struct output_ctx *octx)
 {
-	return symbolic_constant_print(devgroup_tbl, expr);
+	return symbolic_constant_print(devgroup_tbl, expr, true, octx);
 }
 
 static struct error_record *devgroup_type_parse(const struct expr *sym,
@@ -350,7 +357,7 @@ static struct error_record *devgroup_type_parse(const struct expr *sym,
 	return symbolic_constant_parse(sym, devgroup_tbl, res);
 }
 
-static const struct datatype devgroup_type = {
+const struct datatype devgroup_type = {
 	.type		= TYPE_DEVGROUP,
 	.name		= "devgroup",
 	.desc		= "devgroup name",
@@ -418,6 +425,9 @@ static const struct meta_template meta_templates[] = {
 	[NFT_META_CGROUP]	= META_TEMPLATE("cgroup",    &integer_type,
 						4 * BITS_PER_BYTE,
 						BYTEORDER_HOST_ENDIAN),
+	[NFT_META_PRANDOM]	= META_TEMPLATE("random",    &integer_type,
+						4 * BITS_PER_BYTE,
+						BYTEORDER_BIG_ENDIAN), /* avoid conversion; doesn't have endianess */
 };
 
 static bool meta_key_is_qualified(enum nft_meta_keys key)
@@ -428,18 +438,21 @@ static bool meta_key_is_qualified(enum nft_meta_keys key)
 	case NFT_META_L4PROTO:
 	case NFT_META_PROTOCOL:
 	case NFT_META_PRIORITY:
+	case NFT_META_PRANDOM:
 		return true;
 	default:
 		return false;
 	}
 }
 
-static void meta_expr_print(const struct expr *expr)
+static void meta_expr_print(const struct expr *expr, struct output_ctx *octx)
 {
 	if (meta_key_is_qualified(expr->meta.key))
-		printf("meta %s", meta_templates[expr->meta.key].token);
+		nft_print(octx, "meta %s",
+			  meta_templates[expr->meta.key].token);
 	else
-		printf("%s", meta_templates[expr->meta.key].token);
+		nft_print(octx, "%s",
+			  meta_templates[expr->meta.key].token);
 }
 
 static bool meta_expr_cmp(const struct expr *e1, const struct expr *e2)
@@ -467,6 +480,7 @@ static void meta_expr_pctx_update(struct proto_ctx *ctx,
 	const struct hook_proto_desc *h = &hook_proto_desc[ctx->family];
 	const struct expr *left = expr->left, *right = expr->right;
 	const struct proto_desc *desc;
+	uint8_t protonum;
 
 	assert(expr->op == OP_EQ);
 
@@ -484,9 +498,15 @@ static void meta_expr_pctx_update(struct proto_ctx *ctx,
 		proto_ctx_update(ctx, PROTO_BASE_LL_HDR, &expr->location, desc);
 		break;
 	case NFT_META_NFPROTO:
-		desc = proto_find_upper(h->desc, mpz_get_uint8(right->value));
-		if (desc == NULL)
+		protonum = mpz_get_uint8(right->value);
+		desc = proto_find_upper(h->desc, protonum);
+		if (desc == NULL) {
 			desc = &proto_unknown;
+
+			if (protonum == ctx->family &&
+			    h->base == PROTO_BASE_NETWORK_HDR)
+				desc = h->desc;
+		}
 
 		proto_ctx_update(ctx, PROTO_BASE_NETWORK_HDR, &expr->location, desc);
 		break;
@@ -554,14 +574,16 @@ struct expr *meta_expr_alloc(const struct location *loc, enum nft_meta_keys key)
 	return expr;
 }
 
-static void meta_stmt_print(const struct stmt *stmt)
+static void meta_stmt_print(const struct stmt *stmt, struct output_ctx *octx)
 {
 	if (meta_key_is_qualified(stmt->meta.key))
-		printf("meta %s set ", meta_templates[stmt->meta.key].token);
+		nft_print(octx, "meta %s set ",
+			  meta_templates[stmt->meta.key].token);
 	else
-		printf("%s set ", meta_templates[stmt->meta.key].token);
+		nft_print(octx, "%s set ",
+			  meta_templates[stmt->meta.key].token);
 
-	expr_print(stmt->meta.expr);
+	expr_print(stmt->meta.expr, octx);
 }
 
 static const struct stmt_ops meta_stmt_ops = {
@@ -582,17 +604,6 @@ struct stmt *meta_stmt_alloc(const struct location *loc, enum nft_meta_keys key,
 	return stmt;
 }
 
-static void __init meta_init(void)
-{
-	datatype_register(&ifindex_type);
-	datatype_register(&realm_type);
-	datatype_register(&tchandle_type);
-	datatype_register(&uid_type);
-	datatype_register(&gid_type);
-	datatype_register(&devgroup_type);
-	datatype_register(&pkttype_type);
-}
-
 /*
  * @expr:	payload expression
  * @res:	dependency expression
@@ -611,4 +622,40 @@ struct stmt *meta_stmt_meta_iiftype(const struct location *loc, uint16_t type)
 
 	dep = relational_expr_alloc(loc, OP_EQ, left, right);
 	return expr_stmt_alloc(&dep->location, dep);
+}
+
+struct error_record *meta_key_parse(const struct location *loc,
+                                    const char *str,
+                                    unsigned int *value)
+{
+	int ret, len, offset = 0;
+	const char *sep = "";
+	unsigned int i;
+	char buf[1024];
+	size_t size;
+
+	for (i = 0; i < array_size(meta_templates); i++) {
+		if (!meta_templates[i].token || strcmp(meta_templates[i].token, str))
+			continue;
+
+		*value = i;
+		return NULL;
+	}
+
+	len = (int)sizeof(buf);
+	size = sizeof(buf);
+
+	for (i = 0; i < array_size(meta_templates); i++) {
+		if (!meta_templates[i].token)
+			continue;
+
+		if (offset)
+			sep = ", ";
+
+		ret = snprintf(buf+offset, len, "%s%s", sep, meta_templates[i].token);
+		SNPRINTF_BUFFER_SIZE(ret, size, len, offset);
+		assert(offset < (int)sizeof(buf));
+	}
+
+	return error(loc, "syntax error, unexpected %s, known keys are %s", str, buf);
 }

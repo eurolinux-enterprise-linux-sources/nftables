@@ -1,0 +1,56 @@
+From 9abe6ef333d4d1f7c83e10ee73bca70f64b9fdba Mon Sep 17 00:00:00 2001
+From: Phil Sutter <psutter@redhat.com>
+Date: Wed, 20 Jun 2018 09:36:59 +0200
+Subject: [PATCH] doc: reword insert position, this expects rule handle to
+ insert, not a relative postition
+
+Bugzilla: https://bugzilla.redhat.com/show_bug.cgi?id=1571968
+Upstream Status: nftables commit 45172efadbede
+Conflicts: Context change due to missing commit f9cb9580b924f
+           ("doc: nft.8 aim for consistent synopses throughout")
+
+commit 45172efadbedee2b2dedc1e771046cca7edb0111
+Author: Florian Westphal <fw@strlen.de>
+Date:   Tue Apr 24 16:54:52 2018 +0200
+
+    doc: reword insert position, this expects rule handle to insert, not a relative postition
+
+    Signed-off-by: Florian Westphal <fw@strlen.de>
+---
+ doc/nft.xml | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/doc/nft.xml b/doc/nft.xml
+index 3da5fda..45a392f 100644
+--- a/doc/nft.xml
++++ b/doc/nft.xml
+@@ -835,7 +835,7 @@ filter input iif $int_ifs accept
+ 				<arg choice="opt"><replaceable>family</replaceable></arg>
+ 				<arg choice="req"><replaceable>table</replaceable></arg>
+ 				<arg choice="req"><replaceable>chain</replaceable></arg>
+-				<arg choice="opt">position <replaceable>position</replaceable></arg>
++				<arg choice="opt">position <replaceable>handle</replaceable></arg>
+ 				<arg choice="req" rep="repeat"><replaceable>statement</replaceable></arg>
+ 			</cmdsynopsis>
+ 			<cmdsynopsis>
+@@ -868,7 +868,7 @@ filter input iif $int_ifs accept
+ 					<para>
+ 						Add a new rule described by the list of statements. The rule is appended to the
+ 						given chain unless a position is specified, in which case the rule is appended to
+-						the rule given by the position.
++						the rule given by the handle.
+ 					</para>
+ 				</listitem>
+ 			</varlistentry>
+@@ -877,7 +877,7 @@ filter input iif $int_ifs accept
+ 				<listitem>
+ 					<para>
+ 						Similar to the <command>add</command> command, but the rule is prepended to the
+-						beginning of the chain or before the rule at the given position.
++						beginning of the chain or before the rule with the given handle.
+ 					</para>
+ 				</listitem>
+ 			</varlistentry>
+-- 
+1.8.3.1
+

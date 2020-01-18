@@ -25,6 +25,7 @@
  * @type:	the datatype of the dimension
  * @dwidth:	width of the dimension
  * @byteorder:	byteorder of elements
+ * @debug_mask:	display debugging information
  */
 struct seg_tree {
 	struct rb_root			root;
@@ -33,10 +34,12 @@ struct seg_tree {
 	const struct datatype		*datatype;
 	unsigned int			datalen;
 	enum byteorder			byteorder;
+	unsigned int			debug_mask;
 };
 
 enum elementary_interval_flags {
 	EI_F_INTERVAL_END	= 0x1,
+	EI_F_INTERVAL_OPEN	= 0x2,
 };
 
 /**
@@ -64,18 +67,21 @@ struct elementary_interval {
 	struct expr			*expr;
 };
 
+static struct output_ctx debug_octx = {};
+
 static void seg_tree_init(struct seg_tree *tree, const struct set *set,
-			  struct expr *init)
+			  struct expr *init, unsigned int debug_mask)
 {
 	struct expr *first;
 
 	first = list_entry(init->expressions.next, struct expr, list);
 	tree->root	= RB_ROOT;
-	tree->keytype	= set->keytype;
-	tree->keylen	= set->keylen;
+	tree->keytype	= set->key->dtype;
+	tree->keylen	= set->key->len;
 	tree->datatype	= set->datatype;
 	tree->datalen	= set->datalen;
 	tree->byteorder	= first->byteorder;
+	tree->debug_mask = debug_mask;
 }
 
 static struct elementary_interval *ei_alloc(const mpz_t left, const mpz_t right,
@@ -158,12 +164,11 @@ static void __ei_insert(struct seg_tree *tree, struct elementary_interval *new)
 	rb_insert_color(&new->rb_node, &tree->root);
 }
 
-static bool segtree_debug(void)
+static bool segtree_debug(unsigned int debug_mask)
 {
-#ifdef DEBUG
-	if (debug_level & DEBUG_SEGTREE)
+	if (debug_mask & DEBUG_SEGTREE)
 		return true;
-#endif
+
 	return false;
 }
 
@@ -190,7 +195,7 @@ static void ei_insert(struct seg_tree *tree, struct elementary_interval *new)
 	lei = ei_lookup(tree, new->left);
 	rei = ei_lookup(tree, new->right);
 
-	if (segtree_debug())
+	if (segtree_debug(tree->debug_mask))
 		pr_gmp_debug("insert: [%Zx %Zx]\n", new->left, new->right);
 
 	if (lei != NULL && rei != NULL && lei == rei) {
@@ -200,7 +205,7 @@ static void ei_insert(struct seg_tree *tree, struct elementary_interval *new)
 		 *
 		 * [lei_left, new_left) and (new_right, rei_right]
 		 */
-		if (segtree_debug())
+		if (segtree_debug(tree->debug_mask))
 			pr_gmp_debug("split [%Zx %Zx]\n", lei->left, lei->right);
 
 		ei_remove(tree, lei);
@@ -220,7 +225,7 @@ static void ei_insert(struct seg_tree *tree, struct elementary_interval *new)
 			 *
 			 * [lei_left, new_left)[new_left, new_right]
 			 */
-			if (segtree_debug()) {
+			if (segtree_debug(tree->debug_mask)) {
 				pr_gmp_debug("adjust left [%Zx %Zx]\n",
 					     lei->left, lei->right);
 			}
@@ -238,7 +243,7 @@ static void ei_insert(struct seg_tree *tree, struct elementary_interval *new)
 			 *
 			 * [new_left, new_right](new_right, rei_right]
 			 */
-			if (segtree_debug()) {
+			if (segtree_debug(tree->debug_mask)) {
 				pr_gmp_debug("adjust right [%Zx %Zx]\n",
 					     rei->left, rei->right);
 			}
@@ -336,6 +341,10 @@ static unsigned int expr_to_intervals(const struct expr *set,
 static bool interval_overlap(const struct elementary_interval *e1,
 			     const struct elementary_interval *e2)
 {
+	if (mpz_cmp(e1->left, e2->left) == 0 &&
+	    mpz_cmp(e1->right, e2->right) == 0)
+		return false;
+
 	return (mpz_cmp(e1->left, e2->left) >= 0 &&
 	        mpz_cmp(e1->left, e2->right) <= 0) ||
 	       (mpz_cmp(e1->right, e2->left) >= 0 &&
@@ -377,7 +386,7 @@ static int set_to_segtree(struct list_head *msgs, struct set *set,
 	/* We are updating an existing set with new elements, check if the new
 	 * interval overlaps with any of the existing ones.
 	 */
-	if (add && set->init != init) {
+	if (add && set->init && set->init != init) {
 		err = set_overlap(msgs, set, init, tree->keylen);
 		if (err < 0)
 			return err;
@@ -399,7 +408,7 @@ static int set_to_segtree(struct list_head *msgs, struct set *set,
 	 * Insert elements into tree
 	 */
 	for (n = 0; n < init->size; n++) {
-		if (init->set_flags & SET_F_MAP &&
+		if (init->set_flags & NFT_SET_MAP &&
 		    n < init->size - 1 &&
 		    interval_conflict(intervals[n], intervals[n+1]))
 			return expr_binary_error(msgs,
@@ -422,7 +431,7 @@ static bool segtree_needs_first_segment(const struct set *set,
 		 * 2) This set exists and it is empty.
 		 * 3) This set is created with a number of initial elements.
 		 */
-		if ((set->flags & SET_F_ANONYMOUS) ||
+		if ((set->flags & NFT_SET_ANONYMOUS) ||
 		    (set->init && set->init->size == 0) ||
 		    (set->init == init))
 			return true;
@@ -455,7 +464,7 @@ static void segtree_linearize(struct list_head *list, const struct set *set,
 	 * Convert the tree of open intervals to half-closed map expressions.
 	 */
 	rb_for_each_entry_safe(ei, node, next, &tree->root, rb_node) {
-		if (segtree_debug())
+		if (segtree_debug(tree->debug_mask))
 			pr_gmp_debug("iter: [%Zx %Zx]\n", ei->left, ei->right);
 
 		if (prev == NULL) {
@@ -506,6 +515,8 @@ static void segtree_linearize(struct list_head *list, const struct set *set,
 		mpz_bitmask(q, tree->keylen);
 		nei = ei_alloc(p, q, NULL, EI_F_INTERVAL_END);
 		list_add_tail(&nei->list, list);
+	} else {
+		prev->flags |= EI_F_INTERVAL_OPEN;
 	}
 
 	mpz_clear(p);
@@ -522,30 +533,37 @@ static void set_insert_interval(struct expr *set, struct seg_tree *tree,
 	mpz_set(expr->value, ei->left);
 	expr = set_elem_expr_alloc(&internal_location, expr);
 
-	if (ei->expr != NULL && ei->expr->ops->type == EXPR_MAPPING)
-		expr = mapping_expr_alloc(&ei->expr->location, expr,
-					  expr_get(ei->expr->right));
+	if (ei->expr != NULL) {
+		if (ei->expr->comment)
+			expr->comment = xstrdup(ei->expr->comment);
+		if (ei->expr->ops->type == EXPR_MAPPING)
+			expr = mapping_expr_alloc(&ei->expr->location, expr,
+						  expr_get(ei->expr->right));
+	}
 
 	if (ei->flags & EI_F_INTERVAL_END)
 		expr->flags |= EXPR_F_INTERVAL_END;
+	if (ei->flags & EI_F_INTERVAL_OPEN)
+		expr->elem_flags |= SET_ELEM_F_INTERVAL_OPEN;
 
 	compound_expr_add(set, expr);
 }
 
 int set_to_intervals(struct list_head *errs, struct set *set,
-		     struct expr *init, bool add)
+		     struct expr *init, bool add, unsigned int debug_mask)
 {
 	struct elementary_interval *ei, *next;
 	struct seg_tree tree;
 	LIST_HEAD(list);
 
-	seg_tree_init(&tree, set, init);
+	seg_tree_init(&tree, set, init, debug_mask);
 	if (set_to_segtree(errs, set, init, &tree, add) < 0)
 		return -1;
 	segtree_linearize(&list, set, init, &tree, add);
 
+	init->size = 0;
 	list_for_each_entry_safe(ei, next, &list, list) {
-		if (segtree_debug()) {
+		if (segtree_debug(tree.debug_mask)) {
 			pr_gmp_debug("list: [%.*Zx %.*Zx]\n",
 				     2 * tree.keylen / BITS_PER_BYTE, ei->left,
 				     2 * tree.keylen / BITS_PER_BYTE, ei->right);
@@ -554,10 +572,11 @@ int set_to_intervals(struct list_head *errs, struct set *set,
 		ei_destroy(ei);
 	}
 
-	if (segtree_debug()) {
-		expr_print(init);
+	if (segtree_debug(tree.debug_mask)) {
+		expr_print(init, &debug_octx);
 		pr_gmp_debug("\n");
 	}
+
 	return 0;
 }
 
@@ -590,21 +609,29 @@ static int expr_value_cmp(const void *p1, const void *p2)
 	int ret;
 
 	ret = mpz_cmp(expr_value(e1)->value, expr_value(e2)->value);
-	if (ret == 0 && (e1->flags & EXPR_F_INTERVAL_END))
-		return -1;
-	else
-		return 1;
+	if (ret == 0) {
+		if (e1->flags & EXPR_F_INTERVAL_END)
+			return -1;
+		else if (e2->flags & EXPR_F_INTERVAL_END)
+			return 1;
+	}
 
 	return ret;
 }
 
 void interval_map_decompose(struct expr *set)
 {
-	struct expr *elements[set->size], *ranges[set->size * 2];
+	struct expr **elements, **ranges;
 	struct expr *i, *next, *low = NULL, *end;
 	unsigned int n, m, size;
 	mpz_t range, p;
 	bool interval;
+
+	if (set->size == 0)
+		return;
+
+	elements = xmalloc_array(set->size, sizeof(struct expr *));
+	ranges = xmalloc_array(set->size * 2, sizeof(struct expr *));
 
 	mpz_init(range);
 	mpz_init(p);
@@ -689,7 +716,8 @@ void interval_map_decompose(struct expr *set)
 			prefix_len = expr_value(i)->len - mpz_scan0(range, 0);
 			prefix = prefix_expr_alloc(&low->location, expr_value(low),
 						   prefix_len);
-			prefix->len = low->len;
+			prefix->len = expr_value(i)->len;
+
 			prefix = set_elem_expr_alloc(&low->location, prefix);
 			if (low->ops->type == EXPR_MAPPING)
 				prefix = mapping_expr_alloc(&low->location, prefix,
@@ -719,4 +747,7 @@ void interval_map_decompose(struct expr *set)
 
 		compound_expr_add(set, i);
 	}
+
+	xfree(ranges);
+	xfree(elements);
 }

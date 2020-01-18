@@ -29,51 +29,51 @@ ip dscp 0x38;ok;ip dscp cs7
 ip dscp != 0x20;ok;ip dscp != cs4
 ip dscp {cs0, cs1, cs2, cs3, cs4, cs5, cs6, cs7, af11, af12, af13, af21, af22, af23, af31, af32, af33, af41, af42, af43, ef};ok
 - ip dscp {0x08, 0x10, 0x18, 0x20, 0x28, 0x30, 0x38, 0x00, 0x0a, 0x0c, 0x0e, 0x12, 0x14, 0x16, 0x1a, 0x1c, 0x1e, 0x22, 0x24, 0x26, 0x2e};ok
-- ip dscp != {CS0, CS3};ok
+ip dscp != {cs0, cs3};ok
 
 ip length 232;ok
 ip length != 233;ok
 ip length 333-435;ok
 ip length != 333-453;ok
 ip length { 333, 553, 673, 838};ok
-- ip length != { 333, 535, 637, 883};ok
+ip length != { 333, 553, 673, 838};ok
 ip length { 333-535};ok
-- ip length != { 333-553};ok
+ip length != { 333-535};ok
 
 ip id 22;ok
 ip id != 233;ok
 ip id 33-45;ok
 ip id != 33-45;ok
 ip id { 33, 55, 67, 88};ok
-- ip id != { 33, 55, 67, 88};ok
+ip id != { 33, 55, 67, 88};ok
 ip id { 33-55};ok
-- ip id != { 33-55};ok
+ip id != { 33-55};ok
 
 ip frag-off 222 accept;ok
 ip frag-off != 233;ok
 ip frag-off 33-45;ok
 ip frag-off != 33-45;ok
 ip frag-off { 33, 55, 67, 88};ok
-- ip frag-off != { 33, 55, 67, 88};ok
+ip frag-off != { 33, 55, 67, 88};ok
 ip frag-off { 33-55};ok
-- ip frag-off != { 33-55};ok
+ip frag-off != { 33-55};ok
 
 ip ttl 0 drop;ok
 ip ttl 233;ok
 ip ttl 33-55;ok
 ip ttl != 45-50;ok
 ip ttl {43, 53, 45 };ok
-- ip ttl != {46, 56, 93 };ok
-# BUG: ip ttl != {46, 56, 93 };ok
-# BUG: invalid expression type set
-# nft: src/evaluate.c:975: expr_evaluate_relational: Assertion '0' failed.
+ip ttl != {43, 53, 45 };ok
 ip ttl { 33-55};ok
-- ip ttl != { 33-55};ok
+ip ttl != { 33-55};ok
 
 ip protocol tcp;ok;ip protocol 6
 ip protocol != tcp;ok;ip protocol != 6
 ip protocol { icmp, esp, ah, comp, udp, udplite, tcp, dccp, sctp} accept;ok;ip protocol { 33, 136, 17, 51, 50, 6, 132, 1, 108} accept
-- ip protocol != { icmp, esp, ah, comp, udp, udplite, tcp, dccp, sctp} accept;ok
+ip protocol != { icmp, esp, ah, comp, udp, udplite, tcp, dccp, sctp} accept;ok;ip protocol != { 33, 136, 17, 51, 50, 6, 132, 1, 108} accept
+
+ip protocol 255;ok
+ip protocol 256;fail
 
 ip checksum 13172 drop;ok
 ip checksum 22;ok
@@ -81,9 +81,11 @@ ip checksum != 233;ok
 ip checksum 33-45;ok
 ip checksum != 33-45;ok
 ip checksum { 33, 55, 67, 88};ok
-- ip checksum != { 33, 55, 67, 88};ok
+ip checksum != { 33, 55, 67, 88};ok
 ip checksum { 33-55};ok
-- ip checksum != { 33-55};ok
+ip checksum != { 33-55};ok
+
+ip saddr set {192.19.1.2, 191.1.22.1};fail
 
 ip saddr 192.168.2.0/24;ok
 ip saddr != 192.168.2.0/24;ok
@@ -96,9 +98,9 @@ ip daddr 172.16.0.0-172.31.255.255;ok
 ip daddr 192.168.3.1-192.168.4.250;ok
 ip daddr != 192.168.0.1-192.168.0.250;ok
 ip daddr { 192.168.0.1-192.168.0.250};ok
-- ip daddr != { 192.168.0.1-192.168.0.250};ok
+ip daddr != { 192.168.0.1-192.168.0.250};ok
 ip daddr { 192.168.5.1, 192.168.5.2, 192.168.5.3 } accept;ok
-- ip daddr != { 192.168.5.1, 192.168.5.2, 192.168.5.3 } accept;ok
+ip daddr != { 192.168.5.1, 192.168.5.2, 192.168.5.3 } accept;ok
 
 ip daddr 192.168.1.2-192.168.1.55;ok
 ip daddr != 192.168.1.2-192.168.1.55;ok
@@ -118,3 +120,15 @@ ip version 4 ip hdrlength 5;ok
 ip hdrlength 0;ok
 ip hdrlength 15;ok
 ip hdrlength 16;fail
+
+# limit impact to lo
+iif "lo" ip daddr set 127.0.0.1;ok
+iif "lo" ip checksum set 0;ok
+iif "lo" ip id set 0;ok
+iif "lo" ip ecn set 1;ok;iif "lo" ip ecn set ect1
+iif "lo" ip ecn set ce;ok
+iif "lo" ip ttl set 23;ok
+iif "lo" ip protocol set 1;ok
+
+iif "lo" ip dscp set af23;ok
+iif "lo" ip dscp set cs0;ok

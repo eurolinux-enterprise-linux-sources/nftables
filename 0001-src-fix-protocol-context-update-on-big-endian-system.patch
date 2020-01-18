@@ -1,0 +1,208 @@
+From ae89c5b2865f77ac5e3f8e6c74c9b07296a1acdf Mon Sep 17 00:00:00 2001
+From: Phil Sutter <psutter@redhat.com>
+Date: Thu, 14 Dec 2017 14:17:27 +0100
+Subject: [PATCH] src: fix protocol context update on big-endian systems
+
+Bugzilla: https://bugzilla.redhat.com/show_bug.cgi?id=1523016
+Upstream Status: nftables commit a2c55e04d5a11
+
+commit a2c55e04d5a1187914cba2c02810db94de499ace
+Author: Phil Sutter <phil@nwl.cc>
+Date:   Sat Dec 9 16:52:29 2017 +0100
+
+    src: fix protocol context update on big-endian systems
+
+    There is an obscure bug on big-endian systems when trying to list a rule
+    containing the expression 'ct helper tftp' which triggers the assert()
+    call in mpz_get_type().
+
+    Florian identified the cause: ct_expr_pctx_update() is called for the
+    relational expression which calls mpz_get_uint32() to get RHS value
+    (assuming it is a protocol number). On big-endian systems, the
+    misinterpreted value exceeds UINT_MAX.
+
+    Expressions' pctx_update() callback should only be called for protocol
+    matches, so ct_meta_common_postprocess() lacked a check for 'left->flags
+    & EXPR_F_PROTOCOL' like the one already present in
+    payload_expr_pctx_update().
+
+    In order to fix this in a clean way, this patch introduces a wrapper
+    relational_expr_pctx_update() to be used instead of directly calling
+    LHS's pctx_update() callback which unifies the necessary checks (and
+    adds one more assert):
+
+    - assert(expr->ops->type == EXPR_RELATIONAL)
+      -> This is new, just to ensure the wrapper is called properly.
+    - assert(expr->op == OP_EQ)
+      -> This was moved from {ct,meta,payload}_expr_pctx_update().
+    - left->ops->pctx_update != NULL
+      -> This was taken from expr_evaluate_relational(), a necessary
+         requirement for the introduced wrapper to function at all.
+    - (left->flags & EXPR_F_PROTOCOL) != 0
+      -> The crucial missing check which led to the problem.
+
+    Suggested-by: Florian Westphal <fw@strlen.de>
+    Signed-off-by: Phil Sutter <phil@nwl.cc>
+    Signed-off-by: Florian Westphal <fw@strlen.de>
+---
+ include/expression.h      |  3 +++
+ src/ct.c                  |  2 --
+ src/evaluate.c            |  6 ++----
+ src/expression.c          | 13 +++++++++++++
+ src/meta.c                |  2 --
+ src/netlink.c             |  2 +-
+ src/netlink_delinearize.c |  4 ++--
+ src/payload.c             |  7 +------
+ 8 files changed, 22 insertions(+), 17 deletions(-)
+
+diff --git a/include/expression.h b/include/expression.h
+index 215cbc9..915ce0b 100644
+--- a/include/expression.h
++++ b/include/expression.h
+@@ -369,6 +369,9 @@ extern struct expr *binop_expr_alloc(const struct location *loc, enum ops op,
+ extern struct expr *relational_expr_alloc(const struct location *loc, enum ops op,
+ 					  struct expr *left, struct expr *right);
+ 
++extern void relational_expr_pctx_update(struct proto_ctx *ctx,
++					const struct expr *expr);
++
+ extern struct expr *verdict_expr_alloc(const struct location *loc,
+ 				       int verdict, const char *chain);
+ 
+diff --git a/src/ct.c b/src/ct.c
+index 58b873e..8ab32e9 100644
+--- a/src/ct.c
++++ b/src/ct.c
+@@ -327,8 +327,6 @@ static void ct_expr_pctx_update(struct proto_ctx *ctx, const struct expr *expr)
+ 	const struct proto_desc *base = NULL, *desc;
+ 	uint32_t nhproto;
+ 
+-	assert(expr->op == OP_EQ);
+-
+ 	nhproto = mpz_get_uint32(right->value);
+ 
+ 	base = ctx->protocol[left->ct.base].desc;
+diff --git a/src/evaluate.c b/src/evaluate.c
+index 618e188..f16bb33 100644
+--- a/src/evaluate.c
++++ b/src/evaluate.c
+@@ -743,7 +743,7 @@ static int ct_gen_nh_dependency(struct eval_ctx *ctx, struct expr *ct)
+ 				    constant_data_ptr(ct->ct.nfproto, left->len));
+ 	dep = relational_expr_alloc(&ct->location, OP_EQ, left, right);
+ 
+-	left->ops->pctx_update(&ctx->pctx, dep);
++	relational_expr_pctx_update(&ctx->pctx, dep);
+ 
+ 	nstmt = expr_stmt_alloc(&dep->location, dep);
+ 
+@@ -1632,9 +1632,7 @@ static int expr_evaluate_relational(struct eval_ctx *ctx, struct expr **expr)
+ 		 * Update protocol context for payload and meta iiftype
+ 		 * equality expressions.
+ 		 */
+-		if (left->flags & EXPR_F_PROTOCOL &&
+-		    left->ops->pctx_update)
+-			left->ops->pctx_update(&ctx->pctx, rel);
++		relational_expr_pctx_update(&ctx->pctx, rel);
+ 
+ 		if (left->ops->type == EXPR_CONCAT)
+ 			return 0;
+diff --git a/src/expression.c b/src/expression.c
+index fc1097a..f8b560c 100644
+--- a/src/expression.c
++++ b/src/expression.c
+@@ -600,6 +600,19 @@ struct expr *relational_expr_alloc(const struct location *loc, enum ops op,
+ 	return expr;
+ }
+ 
++void relational_expr_pctx_update(struct proto_ctx *ctx,
++				 const struct expr *expr)
++{
++	const struct expr *left = expr->left;
++
++	assert(expr->ops->type == EXPR_RELATIONAL);
++	assert(expr->op == OP_EQ);
++
++	if (left->ops->pctx_update &&
++	    (left->flags & EXPR_F_PROTOCOL))
++		left->ops->pctx_update(ctx, expr);
++}
++
+ static void range_expr_print(const struct expr *expr, struct output_ctx *octx)
+ {
+ 	octx->numeric += NUMERIC_ALL + 1;
+diff --git a/src/meta.c b/src/meta.c
+index 56b9e29..3c31174 100644
+--- a/src/meta.c
++++ b/src/meta.c
+@@ -482,8 +482,6 @@ static void meta_expr_pctx_update(struct proto_ctx *ctx,
+ 	const struct proto_desc *desc;
+ 	uint8_t protonum;
+ 
+-	assert(expr->op == OP_EQ);
+-
+ 	switch (left->meta.key) {
+ 	case NFT_META_IIFTYPE:
+ 		if (h->base < PROTO_BASE_NETWORK_HDR &&
+diff --git a/src/netlink.c b/src/netlink.c
+index d5d410a..5d6f5ce 100644
+--- a/src/netlink.c
++++ b/src/netlink.c
+@@ -2729,7 +2729,7 @@ restart:
+ 		list_add_tail(&stmt->list, &unordered);
+ 
+ 		desc = ctx->protocol[base].desc;
+-		lhs->ops->pctx_update(ctx, rel);
++		relational_expr_pctx_update(ctx, rel);
+ 	}
+ 
+ 	expr_free(rhs);
+diff --git a/src/netlink_delinearize.c b/src/netlink_delinearize.c
+index 4432887..11fd330 100644
+--- a/src/netlink_delinearize.c
++++ b/src/netlink_delinearize.c
+@@ -1329,7 +1329,7 @@ static void payload_match_expand(struct rule_pp_ctx *ctx,
+ 		nexpr = relational_expr_alloc(&expr->location, expr->op,
+ 					      left, tmp);
+ 		if (expr->op == OP_EQ)
+-			left->ops->pctx_update(&ctx->pctx, nexpr);
++			relational_expr_pctx_update(&ctx->pctx, nexpr);
+ 
+ 		nstmt = expr_stmt_alloc(&ctx->stmt->location, nexpr);
+ 		list_add_tail(&nstmt->list, &ctx->stmt->list);
+@@ -1397,7 +1397,7 @@ static void ct_meta_common_postprocess(struct rule_pp_ctx *ctx,
+ 		if (expr->right->ops->type == EXPR_RANGE)
+ 			break;
+ 
+-		expr->left->ops->pctx_update(&ctx->pctx, expr);
++		relational_expr_pctx_update(&ctx->pctx, expr);
+ 
+ 		if (ctx->pdctx.pbase == PROTO_BASE_INVALID &&
+ 		    left->flags & EXPR_F_PROTOCOL) {
+diff --git a/src/payload.c b/src/payload.c
+index aa8a95a..60090ac 100644
+--- a/src/payload.c
++++ b/src/payload.c
+@@ -84,11 +84,6 @@ static void payload_expr_pctx_update(struct proto_ctx *ctx,
+ 	const struct proto_desc *base, *desc;
+ 	unsigned int proto = 0;
+ 
+-	if (!(left->flags & EXPR_F_PROTOCOL))
+-		return;
+-
+-	assert(expr->op == OP_EQ);
+-
+ 	/* Export the data in the correct byte order */
+ 	assert(right->len / BITS_PER_BYTE <= sizeof(proto));
+ 	mpz_export_data(constant_data_ptr(proto, right->len), right->value,
+@@ -240,7 +235,7 @@ static int payload_add_dependency(struct eval_ctx *ctx,
+ 		return expr_error(ctx->msgs, expr,
+ 					  "dependency statement is invalid");
+ 	}
+-	left->ops->pctx_update(&ctx->pctx, dep);
++	relational_expr_pctx_update(&ctx->pctx, dep);
+ 	*res = stmt;
+ 	return 0;
+ }
+-- 
+1.8.3.1
+

@@ -3,9 +3,9 @@
 
 AC_PREREQ(2.61)
 
-AC_COPYRIGHT([Copyright (c) 2008 Patrick McHardy <kaber@trash.net>])
-AC_INIT([nftables], [0.6], [netfilter-devel@vger.kernel.org])
-AC_DEFINE([RELEASE_NAME], ["Support Edward Snowden"], [Release name])
+AC_COPYRIGHT([Copyright (c) 2008 Patrick McHardy <kaber@trash.net>, (c) 2013-2016 Pablo Neira Ayuso <pablo@netfilter.org>])
+AC_INIT([nftables], [0.8], [netfilter-devel@vger.kernel.org])
+AC_DEFINE([RELEASE_NAME], ["Joe Btfsplk"], [Release name])
 
 AC_CONFIG_AUX_DIR([build-aux])
 AC_CANONICAL_HOST
@@ -23,11 +23,17 @@ AC_DEFINE([_GNU_SOURCE], [], [Enable various GNU extensions])
 AC_DEFINE([_STDC_FORMAT_MACROS], [], [printf-style format macros])
 
 AC_ARG_ENABLE([debug],
-	      AS_HELP_STRING([--enable-debug], [Disable debugging]),
+	      AS_HELP_STRING([--enable-debug], [Disable debugging symbols]),
 	      AS_IF([test "x$enable_debug" = "xno"], [with_debug=no], [with_debug=yes]),
 	      [with_debug=yes])
 AC_SUBST(with_debug)
 AM_CONDITIONAL([BUILD_DEBUG], [test "x$with_debug" != xno])
+
+AC_ARG_ENABLE([pdf-doc],
+	      AS_HELP_STRING([--enable-pdf-doc], [Enable PDF documentation]),
+	      AS_IF([test "x$enable_pdf_doc" = "xno"], [enable_pdf_doc=no],
+	      [enable_pdf_doc=yes]), [enable_pdf_doc=no])
+AM_CONDITIONAL([BUILD_PDF], [test "x$enable_pdf_doc" == "xyes" ])
 
 # Checks for programs.
 AC_PROG_CC
@@ -63,15 +69,15 @@ AS_IF([test "$DOCBOOK2X_MAN" != "no"], [DB2MAN="$DOCBOOK2X_MAN"],
 AC_SUBST(DB2MAN)
 AM_CONDITIONAL([BUILD_MAN], [test -n "$DB2MAN"])
 
-AC_CHECK_PROG(DBLATEX, [dblatex], [found], [no])
-AS_IF([test "$DBLATEX" == "no"],
-	[AC_MSG_WARN([dblatex not found, no PDF manpages will be built])]
-)
-AM_CONDITIONAL([BUILD_PDF], [test "$DBLATEX" == "found"])
+AM_COND_IF([BUILD_PDF], [
+	AC_CHECK_PROG(DBLATEX, [dblatex], [found], [no])
+	AS_IF([test "$DBLATEX" == "no"],
+	      [AC_MSG_ERROR([dblatex not found])])
+])
 
 # Checks for libraries.
 PKG_CHECK_MODULES([LIBMNL], [libmnl >= 1.0.3])
-PKG_CHECK_MODULES([LIBNFTNL], [libnftnl >= 1.0.5])
+PKG_CHECK_MODULES([LIBNFTNL], [libnftnl >= 1.0.8])
 
 AC_ARG_WITH([mini-gmp], [AS_HELP_STRING([--with-mini-gmp],
             [Use builtin mini-gmp (for embedded builds)])], [],
@@ -91,6 +97,16 @@ AC_DEFINE([HAVE_LIBREADLINE], [1], [])
 ])
 AC_SUBST(with_cli)
 AM_CONDITIONAL([BUILD_CLI], [test "x$with_cli" != xno])
+
+AC_ARG_WITH([xtables], [AS_HELP_STRING([--with-xtables],
+            [Use libxtables for iptables interaction)])],
+	    [with_libxtables=yes], [with_libxtables=no])
+AS_IF([test "x$with_libxtables" != xno], [
+PKG_CHECK_MODULES([XTABLES], [xtables >= 1.6.1])
+AC_DEFINE([HAVE_LIBXTABLES], [1], [0])
+])
+AC_SUBST(with_libxtables)
+AM_CONDITIONAL([BUILD_XTABLES], [test "x$with_libxtables" == xyes])
 
 # Checks for header files.
 AC_HEADER_STDC
@@ -126,6 +142,10 @@ AC_CONFIG_FILES([					\
 		include/Makefile			\
 		include/linux/Makefile			\
 		include/linux/netfilter/Makefile	\
+		include/linux/netfilter_arp/Makefile	\
+		include/linux/netfilter_bridge/Makefile	\
+		include/linux/netfilter_ipv4/Makefile	\
+		include/linux/netfilter_ipv6/Makefile	\
 		doc/Makefile				\
 		files/Makefile				\
 		files/nftables/Makefile			\
@@ -135,5 +155,7 @@ AC_OUTPUT
 echo "
 nft configuration:
   cli support:			${with_cli}
-  enable debugging:		${with_debug}
-  use mini-gmp:			${with_mini_gmp}"
+  enable debugging symbols:	${with_debug}
+  use mini-gmp:			${with_mini_gmp}
+  enable pdf documentation:	${enable_pdf_doc}
+  libxtables support:		${with_libxtables}"

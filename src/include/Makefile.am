@@ -3,6 +3,8 @@ SUBDIRS = linux
 noinst_HEADERS = 	cli.h		\
 			datatype.h	\
 			expression.h	\
+			fib.h		\
+			hash.h		\
 			mini-gmp.h	\
 			gmputil.h	\
 			iface.h		\
@@ -10,6 +12,7 @@ noinst_HEADERS = 	cli.h		\
 			nftables.h	\
 			payload.h	\
 			rbtree.h	\
+			tcpopt.h	\
 			statement.h	\
 			ct.h		\
 			erec.h		\
@@ -17,8 +20,11 @@ noinst_HEADERS = 	cli.h		\
 			headers.h	\
 			list.h		\
 			meta.h		\
+			numgen.h	\
 			netlink.h	\
 			parser.h	\
 			proto.h		\
 			rule.h		\
-			utils.h
+			rt.h		\
+			utils.h		\
+			xt.h

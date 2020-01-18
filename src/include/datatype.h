@@ -27,7 +27,7 @@
  * @TYPE_IFINDEX:	interface index (integer subtype)
  * @TYPE_ARPHRD:	interface type (integer subtype)
  * @TYPE_REALM:		routing realm (integer subtype)
- * @TYPE_TC_HANDLE:	TC handle (integer subtype)
+ * @TYPE_CLASSID:	TC classid (integer subtype)
  * @TYPE_UID:		user ID (integer subtype)
  * @TYPE_GID:		group ID (integer subtype)
  * @TYPE_CT_STATE:	conntrack state (bitmask subtype)
@@ -66,7 +66,7 @@ enum datatypes {
 	TYPE_IFINDEX,
 	TYPE_ARPHRD,
 	TYPE_REALM,
-	TYPE_TC_HANDLE,
+	TYPE_CLASSID,
 	TYPE_UID,
 	TYPE_GID,
 	TYPE_CT_STATE,
@@ -81,6 +81,9 @@ enum datatypes {
 	TYPE_DEVGROUP,
 	TYPE_DSCP,
 	TYPE_ECN,
+	TYPE_FIB_ADDR,
+	TYPE_BOOLEAN,
+	TYPE_CT_EVENTBIT,
 	__TYPE_MAX
 };
 #define TYPE_MAX		(__TYPE_MAX - 1)
@@ -108,10 +111,12 @@ struct expr;
  *
  * @DTYPE_F_ALLOC:		datatype is dynamically allocated
  * @DTYPE_F_PREFIX:		preferred representation for ranges is a prefix
+ * @DTYPE_F_CLONE:		this is an instance from original datatype
  */
 enum datatype_flags {
 	DTYPE_F_ALLOC		= (1 << 0),
 	DTYPE_F_PREFIX		= (1 << 1),
+	DTYPE_F_CLONE		= (1 << 2),
 };
 
 /**
@@ -140,19 +145,19 @@ struct datatype {
 	const char			*desc;
 	const struct datatype		*basetype;
 	const char			*basefmt;
-	void				(*print)(const struct expr *expr);
+	void				(*print)(const struct expr *expr,
+						 struct output_ctx *octx);
 	struct error_record		*(*parse)(const struct expr *sym,
 						  struct expr **res);
 	const struct symbol_table	*sym_tbl;
 };
 
-extern void datatype_register(const struct datatype *dtype);
 extern const struct datatype *datatype_lookup(enum datatypes type);
 extern const struct datatype *datatype_lookup_byname(const char *name);
 
 extern struct error_record *symbol_parse(const struct expr *sym,
 					 struct expr **res);
-extern void datatype_print(const struct expr *expr);
+extern void datatype_print(const struct expr *expr, struct output_ctx *octx);
 
 static inline bool datatype_equal(const struct datatype *d1,
 				  const struct datatype *d2)
@@ -175,12 +180,24 @@ struct symbolic_constant {
 #define SYMBOL_LIST_END	(struct symbolic_constant) { }
 
 /**
+ * enum base - indicate how to display symbol table values
+ *
+ * @BASE_HEXADECIMAL:	hexadecimal
+ * @BASE_DECIMAL:	decimal
+ */
+enum base {
+	BASE_HEXADECIMAL,
+	BASE_DECIMAL,
+};
+
+/**
  * struct symbol_table - type construction from symbolic values
  *
+ * @base:	base of symbols representation
  * @symbols:	the symbols
  */
 struct symbol_table {
-	int				gcc_workaround;
+	enum base 			base;
 	struct symbolic_constant	symbols[];
 };
 
@@ -188,12 +205,17 @@ extern struct error_record *symbolic_constant_parse(const struct expr *sym,
 						    const struct symbol_table *tbl,
 						    struct expr **res);
 extern void symbolic_constant_print(const struct symbol_table *tbl,
-				    const struct expr *expr);
+				    const struct expr *expr, bool quotes,
+				    struct output_ctx *octx);
 extern void symbol_table_print(const struct symbol_table *tbl,
-			       const struct datatype *dtype);
+			       const struct datatype *dtype,
+			       enum byteorder byteorder,
+			       struct output_ctx *octx);
 
 extern struct symbol_table *rt_symbol_table_init(const char *filename);
 extern void rt_symbol_table_free(struct symbol_table *tbl);
+
+extern const struct symbol_table inet_service_tbl;
 
 extern const struct datatype invalid_type;
 extern const struct datatype verdict_type;
@@ -215,6 +237,7 @@ extern const struct datatype icmp_code_type;
 extern const struct datatype icmpv6_code_type;
 extern const struct datatype icmpx_code_type;
 extern const struct datatype time_type;
+extern const struct datatype boolean_type;
 
 extern const struct datatype *concat_type_alloc(uint32_t type);
 extern void concat_type_destroy(const struct datatype *dtype);
@@ -235,7 +258,11 @@ concat_subtype_lookup(uint32_t type, unsigned int n)
 	return datatype_lookup(concat_subtype_id(type, n));
 }
 
-extern void time_print(uint64_t seconds);
+extern const struct datatype *
+set_datatype_alloc(const struct datatype *orig_dtype, unsigned int byteorder);
+extern void set_datatype_destroy(const struct datatype *dtype);
+
+extern void time_print(uint64_t seconds, struct output_ctx *octx);
 extern struct error_record *time_parse(const struct location *loc,
 				       const char *c, uint64_t *res);
 

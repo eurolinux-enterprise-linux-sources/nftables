@@ -13,9 +13,9 @@
 !set1 type ipv4_addr;ok
 ?set1 192.168.3.4;ok
 
-?set1 192.168.3.4;fail
+?set1 192.168.3.4;ok
 ?set1 192.168.3.5 192.168.3.6;ok
-?set1 192.168.3.5 192.168.3.6;fail
+?set1 192.168.3.5 192.168.3.6;ok
 ?set1 192.168.3.8 192.168.3.9;ok
 ?set1 192.168.3.10 192.168.3.11;ok
 ?set1 1234:1234:1234:1234:1234:1234:1234:1234;fail
@@ -24,13 +24,16 @@
 !set2 type ipv4_addr;ok
 ?set2 192.168.3.4;ok
 ?set2 192.168.3.5 192.168.3.6;ok
-?set2 192.168.3.5 192.168.3.6;fail
+?set2 192.168.3.5 192.168.3.6;ok
 ?set2 192.168.3.8 192.168.3.9;ok
 ?set2 192.168.3.10 192.168.3.11;ok
 
 ip saddr @set1 drop;ok
+ip saddr != @set1 drop;ok
 ip saddr @set2 drop;ok
+ip saddr != @set2 drop;ok
 ip saddr @set33 drop;fail
+ip saddr != @set33 drop;fail
 
 !set3 type ipv4_addr flags interval;ok
 ?set3 192.168.0.0/16;ok
@@ -43,3 +46,11 @@ ip saddr @set33 drop;fail
 ?set4 192.168.2.0/24;ok
 ?set4 192.168.1.1;fail
 ?set4 192.168.3.0/24;ok
+
+!set5 type ipv4_addr . ipv4_addr;ok
+ip saddr . ip daddr @set5 drop;ok
+set add ip saddr . ip daddr @set5;ok
+
+# test nested anonymous sets
+ip saddr { { 1.1.1.0, 3.3.3.0 }, 2.2.2.0 };ok;ip saddr { 1.1.1.0, 2.2.2.0, 3.3.3.0 }
+ip saddr { { 1.1.1.0/24, 3.3.3.0/24 }, 2.2.2.0/24 };ok;ip saddr { 1.1.1.0/24, 2.2.2.0/24, 3.3.3.0/24 }

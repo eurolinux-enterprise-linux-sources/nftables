@@ -13,17 +13,9 @@
 
 #define BITS_PER_BYTE	8
 
-#if defined(DEBUG)
 #define pr_debug(fmt, arg...) printf(fmt, ##arg)
-#else
-#define pr_debug(fmt, arg...) ({ if (false) {}; 0; })
-#endif
 
-#if defined(DEBUG) && defined(HAVE_LIBGMP)
 #define pr_gmp_debug(fmt, arg...) gmp_printf(fmt, ##arg)
-#else
-#define pr_gmp_debug(fmt, arg...) ({ if (false) {}; 0; })
-#endif
 
 #define __fmtstring(x, y)	__attribute__((format(printf, x, y)))
 #if 0
@@ -32,16 +24,10 @@
 #define __gmp_fmtstring(x, y)
 #endif
 
-#define __init			__attribute__((constructor))
-#define __exit			__attribute__((destructor))
 #define __must_check		__attribute__((warn_unused_result))
 #define __noreturn		__attribute__((__noreturn__))
 
-#ifdef DEBUG
 #define BUG(fmt, arg...)	({ fprintf(stderr, "BUG: " fmt, ##arg); assert(0); })
-#else
-#define BUG(fmt, arg...)	assert(0)
-#endif
 
 #define BUILD_BUG_ON(condition)	((void)sizeof(char[1 - 2*!!(condition)]))
 #define BUILD_BUG_ON_ZERO(e)	(sizeof(char[1 - 2 * !!(e)]) - 1)
@@ -83,6 +69,17 @@
 	(void) (&_max1 == &_max2);		\
 	_max1 > _max2 ? _max1 : _max2; })
 
+#define SNPRINTF_BUFFER_SIZE(ret, size, len, offset)	\
+	if (ret < 0)					\
+		abort();				\
+	offset += ret;					\
+	assert(ret < len);				\
+	if (ret > len)					\
+		ret = len;				\
+	size += ret;					\
+	len -= ret;
+
+#define MSEC_PER_SEC	1000L
 
 /**
  * fls - find last (most-significant) bit set
@@ -127,6 +124,7 @@ extern void __memory_allocation_error(const char *filename, uint32_t line) __nor
 
 extern void xfree(const void *ptr);
 extern void *xmalloc(size_t size);
+extern void *xmalloc_array(size_t nmemb, size_t size);
 extern void *xrealloc(void *ptr, size_t size);
 extern void *xzalloc(size_t size);
 extern char *xstrdup(const char *s);

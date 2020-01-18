@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Configuration
-TESTDIR="./"
+TESTDIR="./$(dirname $0)/"
 RETURNCODE_SEPARATOR="_"
+SRC_NFT="$(dirname $0)/../../src/nft"
 
 msg_error() {
 	echo "E: $1 ..." >&2
@@ -21,7 +22,7 @@ if [ "$(id -u)" != "0" ] ; then
 	msg_error "this requires root!"
 fi
 
-[ -z "$NFT" ] && NFT="$(which nft)"
+[ -z "$NFT" ] && NFT=$SRC_NFT
 if [ ! -x "$NFT" ] ; then
 	msg_error "no nft binary!"
 else
@@ -42,6 +43,13 @@ if [ ! -x "$MODPROBE" ] ; then
 	msg_error "no modprobe binary found"
 fi
 
+if [ -x "$1" ] ; then
+	if grep ^.*${RETURNCODE_SEPARATOR}[0-9]\\+$ <<< $1 >/dev/null ; then
+		SINGLE=$1
+		VERBOSE=y
+	fi
+fi
+
 if [ "$1" == "-v" ] ; then
 	VERBOSE=y
 fi
@@ -53,15 +61,21 @@ kernel_cleanup() {
 	nft_redir_ipv4 nft_redir_ipv6 nft_redir \
 	nft_dup_ipv4 nft_dup_ipv6 nft_dup nft_nat \
 	nft_masq_ipv4 nft_masq_ipv6 nft_masq \
-	nft_exthdr nft_payload nft_cmp \
+	nft_exthdr nft_payload nft_cmp nft_range \
+	nft_quota nft_queue nft_numgen \
 	nft_meta nft_meta_bridge nft_counter nft_log nft_limit \
-	nft_hash nft_rbtree nft_ct nft_compat \
+	nft_hash nft_ct nft_compat nft_rt \
+	nft_set_hash nft_set_rbtree nft_set_bitmap \
 	nft_chain_nat_ipv4 nft_chain_nat_ipv6 \
 	nf_tables_inet nf_tables_bridge nf_tables_arp \
 	nf_tables_ipv4 nf_tables_ipv6 nf_tables
 }
 
 find_tests() {
+	if [ ! -z "$SINGLE" ] ; then
+		echo $SINGLE
+		return
+	fi
 	${FIND} ${TESTDIR} -executable -regex \
 		.*${RETURNCODE_SEPARATOR}[0-9]+ | sort
 }
@@ -76,7 +90,7 @@ do
 	rc_spec=$(awk -F${RETURNCODE_SEPARATOR} '{print $NF}' <<< $testfile)
 
 	msg_info "[EXECUTING]	$testfile"
-	test_output=$(NFT=$NFT ${testfile} ${TESTS_OUTPUT} 2>&1)
+	test_output=$(NFT=$NFT ${testfile} 2>&1)
 	rc_got=$?
 	echo -en "\033[1A\033[K" # clean the [EXECUTING] foobar line
 

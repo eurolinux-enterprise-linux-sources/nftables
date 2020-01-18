@@ -20,6 +20,7 @@
 #include <linux/netfilter/nf_tables.h>
 #include <linux/netfilter/nf_conntrack_tuple_common.h>
 #include <linux/netfilter/nf_nat.h>
+#include <linux/netfilter/nf_log.h>
 #include <netinet/ip_icmp.h>
 #include <netinet/icmp6.h>
 #include <libnftnl/common.h>
@@ -34,17 +35,23 @@
 
 #include "parser_bison.h"
 
-void parser_init(struct parser_state *state, struct list_head *msgs)
+void parser_init(struct mnl_socket *nf_sock, struct nft_cache *cache,
+		 struct parser_state *state, struct list_head *msgs,
+		 unsigned int debug_mask, struct output_ctx *octx)
 {
 	memset(state, 0, sizeof(*state));
 	init_list_head(&state->cmds);
 	init_list_head(&state->top_scope.symbols);
 	state->msgs = msgs;
 	state->scopes[0] = scope_init(&state->top_scope, NULL);
+	state->ectx.cache = cache;
 	state->ectx.msgs = msgs;
+	state->ectx.nf_sock = nf_sock;
+	state->ectx.debug_mask = debug_mask;
+	state->ectx.octx = octx;
 }
 
-static void yyerror(struct location *loc, void *scanner,
+static void yyerror(struct location *loc, struct nft_ctx *nft, void *scanner,
 		    struct parser_state *state, const char *s)
 {
 	erec_queue(error(loc, "%s", s), state->msgs);
@@ -96,6 +103,8 @@ static void location_update(struct location *loc, struct location *rhs, int n)
 
 #define YYLLOC_DEFAULT(Current, Rhs, N)	location_update(&Current, Rhs, N)
 
+#define symbol_value(loc, str) \
+	symbol_expr_alloc(loc, SYMBOL_VALUE, current_scope(state), str)
 %}
 
 /* Declaration section */
@@ -103,6 +112,7 @@ static void location_update(struct location *loc, struct location *rhs, int n)
 %name-prefix "nft_"
 %debug
 %pure-parser
+%parse-param		{ struct nft_ctx *nft }
 %parse-param		{ void *scanner }
 %parse-param		{ struct parser_state *state }
 %lex-param		{ scanner }
@@ -111,12 +121,10 @@ static void location_update(struct location *loc, struct location *rhs, int n)
 
 %initial-action {
 	location_init(scanner, state, &yylloc);
-#ifdef DEBUG
-	if (debug_level & DEBUG_SCANNER)
+	if (nft->debug_mask & DEBUG_SCANNER)
 		nft_set_debug(1, scanner);
-	if (debug_level & DEBUG_PARSER)
+	if (nft->debug_mask & DEBUG_PARSER)
 		yydebug = 1;
-#endif
 }
 
 %union {
@@ -132,9 +140,15 @@ static void location_update(struct location *loc, struct location *rhs, int n)
 	struct stmt		*stmt;
 	struct expr		*expr;
 	struct set		*set;
+	struct obj		*obj;
+	struct counter		*counter;
+	struct quota		*quota;
+	struct ct		*ct;
+	struct limit		*limit;
 	const struct datatype	*datatype;
 	struct handle_spec	handle_spec;
 	struct position_spec	position_spec;
+	const struct exthdr_desc *exthdr_desc;
 }
 
 %token TOKEN_EOF 0		"end of file"
@@ -162,9 +176,12 @@ static void location_update(struct location *loc, struct location *rhs, int n)
 %token DASH			"-"
 %token AT			"@"
 %token VMAP			"vmap"
+%token LOOKUP			"lookup"
 
 %token INCLUDE			"include"
 %token DEFINE			"define"
+
+%token FIB			"fib"
 
 %token HOOK			"hook"
 %token DEVICE			"device"
@@ -181,6 +198,7 @@ static void location_update(struct location *loc, struct location *rhs, int n)
 %token MAPS			"maps"
 %token HANDLE			"handle"
 %token RULESET			"ruleset"
+%token TRACE			"trace"
 
 %token INET			"inet"
 %token NETDEV			"netdev"
@@ -192,11 +210,14 @@ static void location_update(struct location *loc, struct location *rhs, int n)
 %token INSERT			"insert"
 %token DELETE			"delete"
 %token LIST			"list"
+%token RESET			"reset"
 %token FLUSH			"flush"
 %token RENAME			"rename"
 %token DESCRIBE			"describe"
 %token EXPORT			"export"
 %token MONITOR			"monitor"
+
+%token ALL			"all"
 
 %token ACCEPT			"accept"
 %token DROP			"drop"
@@ -221,8 +242,8 @@ static void location_update(struct location *loc, struct location *rhs, int n)
 
 %token <val> NUM		"number"
 %token <string> STRING		"string"
-%token <string> QUOTED_STRING
-%token <string> ASTERISK_STRING
+%token <string> QUOTED_STRING	"quoted string"
+%token <string> ASTERISK_STRING	"string with a trailing asterisk"
 %destructor { xfree($$); }	STRING QUOTED_STRING ASTERISK_STRING
 
 %token LL_HDR			"ll"
@@ -265,6 +286,8 @@ static void location_update(struct location *loc, struct location *rhs, int n)
 %token GATEWAY			"gateway"
 %token MTU			"mtu"
 
+%token OPTIONS			"options"
+
 %token IP6			"ip6"
 %token PRIORITY			"priority"
 %token FLOWLABEL		"flowlabel"
@@ -296,6 +319,24 @@ static void location_update(struct location *loc, struct location *rhs, int n)
 %token DOFF			"doff"
 %token WINDOW			"window"
 %token URGPTR			"urgptr"
+%token OPTION			"option"
+%token ECHO			"echo"
+%token EOL			"eol"
+%token MAXSEG			"maxseg"
+%token NOOP			"noop"
+%token SACK			"sack"
+%token SACK0			"sack0"
+%token SACK1			"sack1"
+%token SACK2			"sack2"
+%token SACK3			"sack3"
+%token SACK_PERMITTED		"sack-permitted"
+%token TIMESTAMP		"timestamp"
+%token KIND			"kind"
+%token COUNT			"count"
+%token LEFT			"left"
+%token RIGHT			"right"
+%token TSVAL			"tsval"
+%token TSECR			"tsecr"
 
 %token DCCP			"dccp"
 
@@ -319,8 +360,6 @@ static void location_update(struct location *loc, struct location *rhs, int n)
 %token MH			"mh"
 
 %token META			"meta"
-%token NFPROTO			"nfproto"
-%token L4PROTO			"l4proto"
 %token MARK			"mark"
 %token IIF			"iif"
 %token IIFNAME			"iifname"
@@ -340,20 +379,34 @@ static void location_update(struct location *loc, struct location *rhs, int n)
 %token OIFGROUP			"oifgroup"
 %token CGROUP			"cgroup"
 
+%token CLASSID			"classid"
+%token NEXTHOP			"nexthop"
+
 %token CT			"ct"
-%token DIRECTION		"direction"
-%token STATE			"state"
-%token STATUS			"status"
-%token EXPIRATION		"expiration"
-%token HELPER			"helper"
 %token L3PROTOCOL		"l3proto"
 %token PROTO_SRC		"proto-src"
 %token PROTO_DST		"proto-dst"
+%token ZONE			"zone"
+%token DIRECTION		"direction"
+%token EVENT			"event"
+%token EXPIRATION		"expiration"
+%token HELPER			"helper"
 %token LABEL			"label"
+%token STATE			"state"
+%token STATUS			"status"
+%token ORIGINAL			"original"
+%token REPLY			"reply"
 
 %token COUNTER			"counter"
+%token NAME			"name"
 %token PACKETS			"packets"
 %token BYTES			"bytes"
+%token AVGPKT			"avgpkt"
+
+%token COUNTERS			"counters"
+%token QUOTAS			"quotas"
+%token LIMITS			"limits"
+%token HELPERS			"helpers"
 
 %token LOG			"log"
 %token PREFIX			"prefix"
@@ -361,20 +414,15 @@ static void location_update(struct location *loc, struct location *rhs, int n)
 %token SNAPLEN			"snaplen"
 %token QUEUE_THRESHOLD		"queue-threshold"
 %token LEVEL			"level"
-%token LEVEL_EMERG		"emerg"
-%token LEVEL_ALERT		"alert"
-%token LEVEL_CRIT		"crit"
-%token LEVEL_ERR		"err"
-%token LEVEL_WARN		"warn"
-%token LEVEL_NOTICE		"notice"
-%token LEVEL_INFO		"info"
-%token LEVEL_DEBUG		"debug"
 
 %token LIMIT			"limit"
 %token RATE			"rate"
 %token BURST			"burst"
 %token OVER			"over"
 %token UNTIL			"until"
+
+%token QUOTA			"quota"
+%token USED			"used"
 
 %token NANOSECOND		"nanosecond"
 %token MICROSECOND		"microsecond"
@@ -405,37 +453,50 @@ static void location_update(struct location *loc, struct location *rhs, int n)
 %token DUP			"dup"
 %token FWD			"fwd"
 
+%token NUMGEN			"numgen"
+%token INC			"inc"
+%token MOD			"mod"
+%token OFFSET			"offset"
+
+%token JHASH			"jhash"
+%token SYMHASH			"symhash"
+%token SEED			"seed"
+
 %token POSITION			"position"
 %token COMMENT			"comment"
 
 %token XML			"xml"
 %token JSON			"json"
 
+%token NOTRACK			"notrack"
+
+%token EXISTS			"exists"
+%token MISSING			"missing"
+
+%token EXTHDR			"exthdr"
+
 %type <string>			identifier type_identifier string comment_spec
 %destructor { xfree($$); }	identifier type_identifier string comment_spec
 
-%type <val>			time_spec
+%type <val>			time_spec quota_used
 
-%type <val>			type_identifier_list
-%type <datatype>		data_type
+%type <expr>			data_type_expr data_type_atom_expr
+%destructor { expr_free($$); }  data_type_expr data_type_atom_expr
 
 %type <cmd>			line
 %destructor { cmd_free($$); }	line
 
-%type <cmd>			base_cmd add_cmd replace_cmd create_cmd insert_cmd delete_cmd list_cmd flush_cmd rename_cmd export_cmd monitor_cmd describe_cmd
-%destructor { cmd_free($$); }	base_cmd add_cmd replace_cmd create_cmd insert_cmd delete_cmd list_cmd flush_cmd rename_cmd export_cmd monitor_cmd describe_cmd
+%type <cmd>			base_cmd add_cmd replace_cmd create_cmd insert_cmd delete_cmd list_cmd reset_cmd flush_cmd rename_cmd export_cmd monitor_cmd describe_cmd
+%destructor { cmd_free($$); }	base_cmd add_cmd replace_cmd create_cmd insert_cmd delete_cmd list_cmd reset_cmd flush_cmd rename_cmd export_cmd monitor_cmd describe_cmd
 
-%type <handle>			table_spec chain_spec chain_identifier ruleid_spec ruleset_spec
-%destructor { handle_free(&$$); } table_spec chain_spec chain_identifier ruleid_spec ruleset_spec
-%type <handle>			set_spec set_identifier
-%destructor { handle_free(&$$); } set_spec set_identifier
+%type <handle>			table_spec chain_spec chain_identifier ruleid_spec handle_spec position_spec rule_position ruleset_spec
+%destructor { handle_free(&$$); } table_spec chain_spec chain_identifier ruleid_spec handle_spec position_spec rule_position ruleset_spec
+%type <handle>			set_spec set_identifier obj_spec obj_identifier
+%destructor { handle_free(&$$); } set_spec set_identifier obj_spec obj_identifier
 %type <val>			family_spec family_spec_explicit chain_policy prio_spec
 
-%type <handle_spec>		handle_spec
-%type <position_spec>		position_spec
-
-%type <string>			dev_spec
-%destructor { xfree($$); }	dev_spec
+%type <string>			dev_spec quota_unit
+%destructor { xfree($$); }	dev_spec quota_unit
 
 %type <table>			table_block_alloc table_block
 %destructor { close_scope(state); table_free($$); }	table_block_alloc
@@ -454,6 +515,9 @@ static void location_update(struct location *loc, struct location *rhs, int n)
 %type <set>			map_block_alloc map_block
 %destructor { set_free($$); }	map_block_alloc
 
+%type <obj>			obj_block_alloc counter_block quota_block ct_helper_block limit_block
+%destructor { obj_free($$); }	obj_block_alloc
+
 %type <list>			stmt_list
 %destructor { stmt_list_free($$); xfree($$); } stmt_list
 %type <stmt>			stmt match_stmt verdict_stmt
@@ -468,15 +532,15 @@ static void location_update(struct location *loc, struct location *rhs, int n)
 %destructor { stmt_free($$); }	meta_stmt
 %type <stmt>			log_stmt log_stmt_alloc
 %destructor { stmt_free($$); }	log_stmt log_stmt_alloc
-%type <val>			level_type
-%type <stmt>			limit_stmt
-%destructor { stmt_free($$); }	limit_stmt
-%type <val>			limit_burst limit_mode time_unit
+%type <val>			level_type log_flags log_flags_tcp log_flag_tcp
+%type <stmt>			limit_stmt quota_stmt
+%destructor { stmt_free($$); }	limit_stmt quota_stmt
+%type <val>			limit_burst limit_mode time_unit quota_mode
 %type <stmt>			reject_stmt reject_stmt_alloc
 %destructor { stmt_free($$); }	reject_stmt reject_stmt_alloc
 %type <stmt>			nat_stmt nat_stmt_alloc masq_stmt masq_stmt_alloc redir_stmt redir_stmt_alloc
 %destructor { stmt_free($$); }	nat_stmt nat_stmt_alloc masq_stmt masq_stmt_alloc redir_stmt redir_stmt_alloc
-%type <val>			nf_nat_flags nf_nat_flag
+%type <val>			nf_nat_flags nf_nat_flag offset_opt
 %type <stmt>			queue_stmt queue_stmt_alloc
 %destructor { stmt_free($$); }	queue_stmt queue_stmt_alloc
 %type <val>			queue_stmt_flags queue_stmt_flag
@@ -490,8 +554,8 @@ static void location_update(struct location *loc, struct location *rhs, int n)
 %type <stmt>			flow_stmt flow_stmt_alloc
 %destructor { stmt_free($$); }	flow_stmt flow_stmt_alloc
 
-%type <expr>			symbol_expr verdict_expr integer_expr
-%destructor { expr_free($$); }	symbol_expr verdict_expr integer_expr
+%type <expr>			symbol_expr verdict_expr integer_expr variable_expr
+%destructor { expr_free($$); }	symbol_expr verdict_expr integer_expr variable_expr
 %type <expr>			primary_expr shift_expr and_expr
 %destructor { expr_free($$); }	primary_expr shift_expr and_expr
 %type <expr>			exclusive_or_expr inclusive_or_expr
@@ -504,8 +568,20 @@ static void location_update(struct location *loc, struct location *rhs, int n)
 %type <expr>			prefix_rhs_expr range_rhs_expr wildcard_rhs_expr
 %destructor { expr_free($$); }	prefix_rhs_expr range_rhs_expr wildcard_rhs_expr
 
-%type <expr>			stmt_expr concat_stmt_expr map_stmt_expr
-%destructor { expr_free($$); }	stmt_expr concat_stmt_expr map_stmt_expr
+%type <expr>			stmt_expr concat_stmt_expr map_stmt_expr map_stmt_expr_set
+%destructor { expr_free($$); }	stmt_expr concat_stmt_expr map_stmt_expr map_stmt_expr_set
+
+%type <expr>			multiton_stmt_expr
+%destructor { expr_free($$); }	multiton_stmt_expr
+%type <expr>			prefix_stmt_expr range_stmt_expr wildcard_stmt_expr
+%destructor { expr_free($$); }	prefix_stmt_expr range_stmt_expr wildcard_stmt_expr
+
+%type <expr>			primary_stmt_expr basic_stmt_expr
+%destructor { expr_free($$); }	primary_stmt_expr basic_stmt_expr
+%type <expr>			list_stmt_expr shift_stmt_expr
+%destructor { expr_free($$); }	list_stmt_expr shift_stmt_expr
+%type <expr>			and_stmt_expr exclusive_or_stmt_expr inclusive_or_stmt_expr
+%destructor { expr_free($$); }	and_stmt_expr exclusive_or_stmt_expr inclusive_or_stmt_expr
 
 %type <expr>			concat_expr
 %destructor { expr_free($$); }	concat_expr
@@ -519,24 +595,28 @@ static void location_update(struct location *loc, struct location *rhs, int n)
 %type <expr>			verdict_map_expr verdict_map_list_expr verdict_map_list_member_expr
 %destructor { expr_free($$); }	verdict_map_expr verdict_map_list_expr verdict_map_list_member_expr
 
-%type <expr>			set_expr set_list_expr set_list_member_expr
-%destructor { expr_free($$); }	set_expr set_list_expr set_list_member_expr
+%type <expr>			set_expr set_block_expr set_list_expr set_list_member_expr
+%destructor { expr_free($$); }	set_expr set_block_expr set_list_expr set_list_member_expr
 %type <expr>			set_elem_expr set_elem_expr_alloc set_lhs_expr set_rhs_expr
 %destructor { expr_free($$); }	set_elem_expr set_elem_expr_alloc set_lhs_expr set_rhs_expr
+%type <expr>			set_elem_expr_stmt set_elem_expr_stmt_alloc
+%destructor { expr_free($$); }	set_elem_expr_stmt set_elem_expr_stmt_alloc
 
 %type <expr>			flow_key_expr flow_key_expr_alloc
 %destructor { expr_free($$); }	flow_key_expr flow_key_expr_alloc
 
-%type <expr>			expr initializer_expr
-%destructor { expr_free($$); }	expr initializer_expr
+%type <expr>			expr initializer_expr keyword_expr
+%destructor { expr_free($$); }	expr initializer_expr keyword_expr
 
 %type <expr>			rhs_expr concat_rhs_expr basic_rhs_expr
 %destructor { expr_free($$); }	rhs_expr concat_rhs_expr basic_rhs_expr
-%type <expr>			primary_rhs_expr list_rhs_expr shift_rhs_expr
-%destructor { expr_free($$); }	primary_rhs_expr list_rhs_expr shift_rhs_expr
+%type <expr>			primary_rhs_expr list_rhs_expr shift_rhs_expr symbol_stmt_expr
+%destructor { expr_free($$); }	primary_rhs_expr list_rhs_expr shift_rhs_expr symbol_stmt_expr
 %type <expr>			and_rhs_expr exclusive_or_rhs_expr inclusive_or_rhs_expr
 %destructor { expr_free($$); }	and_rhs_expr exclusive_or_rhs_expr inclusive_or_rhs_expr
 
+%type <obj>			counter_obj quota_obj ct_obj_alloc limit_obj
+%destructor { obj_free($$); }	counter_obj quota_obj ct_obj_alloc limit_obj
 
 %type <expr>			relational_expr
 %destructor { expr_free($$); }	relational_expr
@@ -551,8 +631,8 @@ static void location_update(struct location *loc, struct location *rhs, int n)
 %type <expr>			arp_hdr_expr
 %destructor { expr_free($$); }	arp_hdr_expr
 %type <val>			arp_hdr_field
-%type <expr>			ip_hdr_expr	icmp_hdr_expr
-%destructor { expr_free($$); }	ip_hdr_expr	icmp_hdr_expr
+%type <expr>			ip_hdr_expr	icmp_hdr_expr		numgen_expr	hash_expr
+%destructor { expr_free($$); }	ip_hdr_expr	icmp_hdr_expr		numgen_expr	hash_expr
 %type <val>			ip_hdr_field	icmp_hdr_field
 %type <expr>			ip6_hdr_expr    icmp6_hdr_expr
 %destructor { expr_free($$); }	ip6_hdr_expr	icmp6_hdr_expr
@@ -560,9 +640,9 @@ static void location_update(struct location *loc, struct location *rhs, int n)
 %type <expr>			auth_hdr_expr	esp_hdr_expr		comp_hdr_expr
 %destructor { expr_free($$); }	auth_hdr_expr	esp_hdr_expr		comp_hdr_expr
 %type <val>			auth_hdr_field	esp_hdr_field		comp_hdr_field
-%type <expr>			udp_hdr_expr	udplite_hdr_expr	tcp_hdr_expr
-%destructor { expr_free($$); }	udp_hdr_expr	udplite_hdr_expr	tcp_hdr_expr
-%type <val>			udp_hdr_field	udplite_hdr_field	tcp_hdr_field
+%type <expr>			udp_hdr_expr	udplite_hdr_expr
+%destructor { expr_free($$); }	udp_hdr_expr	udplite_hdr_expr
+%type <val>			udp_hdr_field	udplite_hdr_field
 %type <expr>			dccp_hdr_expr	sctp_hdr_expr
 %destructor { expr_free($$); }	dccp_hdr_expr	sctp_hdr_expr
 %type <val>			dccp_hdr_field	sctp_hdr_field
@@ -581,16 +661,46 @@ static void location_update(struct location *loc, struct location *rhs, int n)
 
 %type <expr>			meta_expr
 %destructor { expr_free($$); }	meta_expr
-%type <val>			meta_key	meta_key_qualified	meta_key_unqualified
+%type <val>			meta_key	meta_key_qualified	meta_key_unqualified	numgen_type
+
+%type <expr>			rt_expr
+%destructor { expr_free($$); }	rt_expr
+%type <val>			rt_key_proto	rt_key
 
 %type <expr>			ct_expr
 %destructor { expr_free($$); }	ct_expr
-%type <val>			ct_key		ct_key_dir	ct_key_counters
+%type <val>			ct_key		ct_dir	ct_key_dir_optional	ct_key_dir	ct_key_proto	ct_key_proto_field
+
+%type <expr>			fib_expr
+%destructor { expr_free($$); }	fib_expr
+%type <val>			fib_tuple	fib_result	fib_flag
 
 %type <val>			export_format
 %type <string>			monitor_event
 %destructor { xfree($$); }	monitor_event
 %type <val>			monitor_object	monitor_format
+
+%type <counter>			counter_config
+%destructor { xfree($$); }	counter_config
+%type <quota>			quota_config
+%destructor { xfree($$); }	quota_config
+%type <limit>			limit_config
+%destructor { xfree($$); }	limit_config
+
+%type <expr>			tcp_hdr_expr
+%destructor { expr_free($$); }	tcp_hdr_expr
+%type <val>			tcp_hdr_field
+%type <val>			tcp_hdr_option_type tcp_hdr_option_field
+
+%type <expr>			boolean_expr
+%destructor { expr_free($$); }	boolean_expr
+%type <val>			boolean_keys
+
+%type <expr>			exthdr_exists_expr
+%destructor { expr_free($$); }	exthdr_exists_expr
+%type <val>			exthdr_key
+
+%type <val>			ct_l4protoname ct_obj_type
 
 %%
 
@@ -604,7 +714,8 @@ input			:	/* empty */
 
 					list_add_tail(&$2->list, &list);
 					if (cmd_evaluate(&state->ectx, $2) < 0) {
-						if (++state->nerrs == max_errors)
+						cmd_free($2);
+						if (++state->nerrs == nft->parser_max_errors)
 							YYABORT;
 					} else
 						list_splice_tail(&list, &state->cmds);
@@ -612,7 +723,7 @@ input			:	/* empty */
 			}
 			;
 
-stmt_seperator		:	NEWLINE
+stmt_separator		:	NEWLINE
 			|	SEMICOLON
 			;
 
@@ -620,38 +731,39 @@ opt_newline		:	NEWLINE
 		 	|	/* empty */
 			;
 
-common_block		:	INCLUDE		QUOTED_STRING	stmt_seperator
+common_block		:	INCLUDE		QUOTED_STRING	stmt_separator
 			{
-				if (scanner_include_file(scanner, $2, &@$) < 0) {
+				if (scanner_include_file(nft, scanner, $2, &@$) < 0) {
 					xfree($2);
 					YYERROR;
 				}
 				xfree($2);
 			}
-			|	DEFINE		identifier	'='	initializer_expr	stmt_seperator
+			|	DEFINE		identifier	'='	initializer_expr	stmt_separator
 			{
 				struct scope *scope = current_scope(state);
 
 				if (symbol_lookup(scope, $2) != NULL) {
-					erec_queue(error(&@2, "redfinition of symbol '%s'", $2),
+					erec_queue(error(&@2, "redefinition of symbol '%s'", $2),
 						   state->msgs);
+					xfree($2);
 					YYERROR;
 				}
 
 				symbol_bind(scope, $2, $4);
 				xfree($2);
 			}
-			|	error		stmt_seperator
+			|	error		stmt_separator
 			{
-				if (++state->nerrs == max_errors)
+				if (++state->nerrs == nft->parser_max_errors)
 					YYABORT;
 				yyerrok;
 			}
 			;
 
 line			:	common_block			{ $$ = NULL; }
-			|	stmt_seperator			{ $$ = NULL; }
-			|	base_cmd	stmt_seperator	{ $$ = $1; }
+			|	stmt_separator			{ $$ = NULL; }
+			|	base_cmd	stmt_separator	{ $$ = $1; }
 			|	base_cmd	TOKEN_EOF
 			{
 				/*
@@ -670,11 +782,14 @@ line			:	common_block			{ $$ = NULL; }
 
 					list_add_tail(&$1->list, &list);
 					if (cmd_evaluate(&state->ectx, $1) < 0) {
-						if (++state->nerrs == max_errors)
+						cmd_free($1);
+						if (++state->nerrs == nft->parser_max_errors)
 							YYABORT;
 					} else
 						list_splice_tail(&list, &state->cmds);
 				}
+				if (state->nerrs)
+					YYABORT;
 				$$ = NULL;
 
 				YYACCEPT;
@@ -688,6 +803,7 @@ base_cmd		:	/* empty */	add_cmd		{ $$ = $1; }
 			|	INSERT		insert_cmd	{ $$ = $2; }
 			|	DELETE		delete_cmd	{ $$ = $2; }
 			|	LIST		list_cmd	{ $$ = $2; }
+			|	RESET		reset_cmd	{ $$ = $2; }
 			|	FLUSH		flush_cmd	{ $$ = $2; }
 			|	RENAME		rename_cmd	{ $$ = $2; }
 			|	EXPORT		export_cmd	{ $$ = $2; }
@@ -718,11 +834,11 @@ add_cmd			:	TABLE		table_spec
 				close_scope(state);
 				$$ = cmd_alloc(CMD_ADD, CMD_OBJ_CHAIN, &$2, &@$, $5);
 			}
-			|	RULE		ruleid_spec	rule
+			|	RULE		rule_position	rule
 			{
 				$$ = cmd_alloc(CMD_ADD, CMD_OBJ_RULE, &$2, &@$, $3);
 			}
-			|	/* empty */	ruleid_spec	rule
+			|	/* empty */	rule_position	rule
 			{
 				$$ = cmd_alloc(CMD_ADD, CMD_OBJ_RULE, &$1, &@$, $2);
 			}
@@ -740,9 +856,35 @@ add_cmd			:	TABLE		table_spec
 				handle_merge(&$3->handle, &$2);
 				$$ = cmd_alloc(CMD_ADD, CMD_OBJ_SET, &$2, &@$, $5);
 			}
-			|	ELEMENT		set_spec	set_expr
+			|	ELEMENT		set_spec	set_block_expr
 			{
 				$$ = cmd_alloc(CMD_ADD, CMD_OBJ_SETELEM, &$2, &@$, $3);
+			}
+			|	COUNTER		obj_spec
+			{
+				struct obj *obj;
+
+				obj = obj_alloc(&@$);
+				obj->type = NFT_OBJECT_COUNTER;
+				handle_merge(&obj->handle, &$2);
+				$$ = cmd_alloc(CMD_ADD, CMD_OBJ_COUNTER, &$2, &@$, obj);
+			}
+			|	COUNTER		obj_spec	counter_obj
+			{
+				$$ = cmd_alloc(CMD_ADD, CMD_OBJ_COUNTER, &$2, &@$, $3);
+			}
+			|	QUOTA		obj_spec	quota_obj
+			{
+				$$ = cmd_alloc(CMD_ADD, CMD_OBJ_QUOTA, &$2, &@$, $3);
+			}
+			|	CT	HELPER	obj_spec	ct_obj_alloc	'{' ct_helper_block '}'	stmt_separator
+			{
+
+				$$ = cmd_alloc_obj_ct(CMD_ADD, NFT_OBJECT_CT_HELPER, &$3, &@$, $4);
+			}
+			|	LIMIT		obj_spec	limit_obj
+			{
+				$$ = cmd_alloc(CMD_ADD, CMD_OBJ_LIMIT, &$2, &@$, $3);
 			}
 			;
 
@@ -775,9 +917,52 @@ create_cmd		:	TABLE		table_spec
 				close_scope(state);
 				$$ = cmd_alloc(CMD_CREATE, CMD_OBJ_CHAIN, &$2, &@$, $5);
 			}
+			|	SET		set_spec	set_block_alloc
+						'{'	set_block	'}'
+			{
+				$5->location = @5;
+				handle_merge(&$3->handle, &$2);
+				$$ = cmd_alloc(CMD_CREATE, CMD_OBJ_SET, &$2, &@$, $5);
+			}
+			|	MAP		set_spec	map_block_alloc
+						'{'	map_block	'}'
+			{
+				$5->location = @5;
+				handle_merge(&$3->handle, &$2);
+				$$ = cmd_alloc(CMD_CREATE, CMD_OBJ_SET, &$2, &@$, $5);
+			}
+			|	ELEMENT		set_spec	set_block_expr
+			{
+				$$ = cmd_alloc(CMD_CREATE, CMD_OBJ_SETELEM, &$2, &@$, $3);
+			}
+			|	COUNTER		obj_spec
+			{
+				struct obj *obj;
+
+				obj = obj_alloc(&@$);
+				obj->type = NFT_OBJECT_COUNTER;
+				handle_merge(&obj->handle, &$2);
+				$$ = cmd_alloc(CMD_CREATE, CMD_OBJ_COUNTER, &$2, &@$, obj);
+			}
+			|	COUNTER		obj_spec	counter_obj
+			{
+				$$ = cmd_alloc(CMD_CREATE, CMD_OBJ_COUNTER, &$2, &@$, $3);
+			}
+			|	QUOTA		obj_spec	quota_obj
+			{
+				$$ = cmd_alloc(CMD_CREATE, CMD_OBJ_QUOTA, &$2, &@$, $3);
+			}
+			|	CT	HELPER	obj_spec	ct_obj_alloc	'{' ct_helper_block '}'	stmt_separator
+			{
+				$$ = cmd_alloc_obj_ct(CMD_CREATE, NFT_OBJECT_CT_HELPER, &$3, &@$, $4);
+			}
+			|	LIMIT		obj_spec	limit_obj
+			{
+				$$ = cmd_alloc(CMD_CREATE, CMD_OBJ_LIMIT, &$2, &@$, $3);
+			}
 			;
 
-insert_cmd		:	RULE		ruleid_spec	rule
+insert_cmd		:	RULE		rule_position	rule
 			{
 				$$ = cmd_alloc(CMD_INSERT, CMD_OBJ_RULE, &$2, &@$, $3);
 			}
@@ -803,9 +988,25 @@ delete_cmd		:	TABLE		table_spec
 			{
 				$$ = cmd_alloc(CMD_DELETE, CMD_OBJ_SET, &$2, &@$, NULL);
 			}
-			|	ELEMENT		set_spec	set_expr
+			|	ELEMENT		set_spec	set_block_expr
 			{
 				$$ = cmd_alloc(CMD_DELETE, CMD_OBJ_SETELEM, &$2, &@$, $3);
+			}
+			|	COUNTER		obj_spec
+			{
+				$$ = cmd_alloc(CMD_DELETE, CMD_OBJ_COUNTER, &$2, &@$, NULL);
+			}
+			|	QUOTA		obj_spec
+			{
+				$$ = cmd_alloc(CMD_DELETE, CMD_OBJ_QUOTA, &$2, &@$, NULL);
+			}
+			|	CT	ct_obj_type	obj_spec	ct_obj_alloc
+			{
+				$$ = cmd_alloc_obj_ct(CMD_DELETE, $2, &$3, &@$, $4);
+			}
+			|	LIMIT		obj_spec
+			{
+				$$ = cmd_alloc(CMD_DELETE, CMD_OBJ_LIMIT, &$2, &@$, NULL);
 			}
 			;
 
@@ -829,9 +1030,49 @@ list_cmd		:	TABLE		table_spec
 			{
 				$$ = cmd_alloc(CMD_LIST, CMD_OBJ_SETS, &$2, &@$, NULL);
 			}
+			|	SETS		TABLE	table_spec
+			{
+				$$ = cmd_alloc(CMD_LIST, CMD_OBJ_SETS, &$3, &@$, NULL);
+			}
 			|	SET		set_spec
 			{
 				$$ = cmd_alloc(CMD_LIST, CMD_OBJ_SET, &$2, &@$, NULL);
+			}
+			|	COUNTERS	ruleset_spec
+			{
+				$$ = cmd_alloc(CMD_LIST, CMD_OBJ_COUNTERS, &$2, &@$, NULL);
+			}
+			|	COUNTERS	TABLE	table_spec
+			{
+				$$ = cmd_alloc(CMD_LIST, CMD_OBJ_COUNTERS, &$3, &@$, NULL);
+			}
+			|	COUNTER		obj_spec
+			{
+				$$ = cmd_alloc(CMD_LIST, CMD_OBJ_COUNTER, &$2, &@$, NULL);
+			}
+			|	QUOTAS		ruleset_spec
+			{
+				$$ = cmd_alloc(CMD_LIST, CMD_OBJ_QUOTAS, &$2, &@$, NULL);
+			}
+			|	QUOTAS		TABLE	table_spec
+			{
+				$$ = cmd_alloc(CMD_LIST, CMD_OBJ_QUOTAS, &$3, &@$, NULL);
+			}
+			|	QUOTA		obj_spec
+			{
+				$$ = cmd_alloc(CMD_LIST, CMD_OBJ_QUOTA, &$2, &@$, NULL);
+			}
+			|	LIMITS		ruleset_spec
+			{
+				$$ = cmd_alloc(CMD_LIST, CMD_OBJ_LIMITS, &$2, &@$, NULL);
+			}
+			|	LIMITS		TABLE	table_spec
+			{
+				$$ = cmd_alloc(CMD_LIST, CMD_OBJ_LIMITS, &$3, &@$, NULL);
+			}
+			|	LIMIT		obj_spec
+			{
+				$$ = cmd_alloc(CMD_LIST, CMD_OBJ_LIMIT, &$2, &@$, NULL);
 			}
 			|	RULESET		ruleset_spec
 			{
@@ -853,6 +1094,40 @@ list_cmd		:	TABLE		table_spec
 			{
 				$$ = cmd_alloc(CMD_LIST, CMD_OBJ_MAP, &$2, &@$, NULL);
 			}
+			|	CT		ct_obj_type	obj_spec
+			{
+				$$ = cmd_alloc_obj_ct(CMD_LIST, $2, &$3, &@$, NULL);
+			}
+			|       CT		HELPERS		TABLE   table_spec
+			{
+				$$ = cmd_alloc(CMD_LIST, CMD_OBJ_CT_HELPERS, &$4, &@$, NULL);
+			}
+			;
+
+reset_cmd		:	COUNTERS	ruleset_spec
+			{
+				$$ = cmd_alloc(CMD_RESET, CMD_OBJ_COUNTERS, &$2, &@$, NULL);
+			}
+			|	COUNTERS	TABLE	table_spec
+			{
+				$$ = cmd_alloc(CMD_RESET, CMD_OBJ_COUNTERS, &$3, &@$, NULL);
+			}
+			|       COUNTER         obj_spec
+			{
+				$$ = cmd_alloc(CMD_RESET, CMD_OBJ_COUNTER, &$2,&@$, NULL);
+			}
+			|	QUOTAS		ruleset_spec
+			{
+				$$ = cmd_alloc(CMD_RESET, CMD_OBJ_QUOTAS, &$2, &@$, NULL);
+			}
+			|	QUOTAS		TABLE	table_spec
+			{
+				$$ = cmd_alloc(CMD_RESET, CMD_OBJ_QUOTAS, &$3, &@$, NULL);
+			}
+			|       QUOTA           obj_spec
+			{
+				$$ = cmd_alloc(CMD_RESET, CMD_OBJ_QUOTA, &$2, &@$, NULL);
+			}
 			;
 
 flush_cmd		:	TABLE		table_spec
@@ -867,6 +1142,14 @@ flush_cmd		:	TABLE		table_spec
 			{
 				$$ = cmd_alloc(CMD_FLUSH, CMD_OBJ_SET, &$2, &@$, NULL);
 			}
+			|	MAP		set_spec
+			{
+				$$ = cmd_alloc(CMD_FLUSH, CMD_OBJ_MAP, &$2, &@$, NULL);
+			}
+			|	FLOW TABLE	set_spec
+			{
+				$$ = cmd_alloc(CMD_FLUSH, CMD_OBJ_FLOWTABLE, &$3, &@$, NULL);
+			}
 			|	RULESET		ruleset_spec
 			{
 				$$ = cmd_alloc(CMD_FLUSH, CMD_OBJ_RULESET, &$2, &@$, NULL);
@@ -880,7 +1163,13 @@ rename_cmd		:	CHAIN		chain_spec	identifier
 			}
 			;
 
-export_cmd		:	export_format
+export_cmd		:	RULESET		export_format
+			{
+				struct handle h = { .family = NFPROTO_UNSPEC };
+				struct export *export = export_alloc($2);
+				$$ = cmd_alloc(CMD_EXPORT, CMD_OBJ_EXPORT, &h, &@$, export);
+			}
+			|	export_format
 			{
 				struct handle h = { .family = NFPROTO_UNSPEC };
 				struct export *export = export_alloc($1);
@@ -907,6 +1196,8 @@ monitor_object		:	/* empty */	{ $$ = CMD_MONITOR_OBJ_ANY; }
 			| 	SETS		{ $$ = CMD_MONITOR_OBJ_SETS; }
 			|	RULES		{ $$ = CMD_MONITOR_OBJ_RULES; }
 			|	ELEMENTS	{ $$ = CMD_MONITOR_OBJ_ELEMS; }
+			|	RULESET		{ $$ = CMD_MONITOR_OBJ_RULESET; }
+			|	TRACE		{ $$ = CMD_MONITOR_OBJ_TRACE; }
 			;
 
 monitor_format		:	/* empty */	{ $$ = NFTNL_OUTPUT_DEFAULT; }
@@ -936,9 +1227,11 @@ table_options		:	FLAGS		STRING
 			{
 				if (strcmp($2, "dormant") == 0) {
 					$<table>0->flags = TABLE_F_DORMANT;
+					xfree($2);
 				} else {
 					erec_queue(error(&@2, "unknown table option %s", $2),
 						   state->msgs);
+					xfree($2);
 					YYERROR;
 				}
 			}
@@ -946,11 +1239,11 @@ table_options		:	FLAGS		STRING
 
 table_block		:	/* empty */	{ $$ = $<table>-1; }
 			|	table_block	common_block
-			|	table_block	stmt_seperator
-			|	table_block	table_options	stmt_seperator
+			|	table_block	stmt_separator
+			|	table_block	table_options	stmt_separator
 			|	table_block	CHAIN		chain_identifier
 					chain_block_alloc	'{' 	chain_block	'}'
-					stmt_seperator
+					stmt_separator
 			{
 				$4->location = @3;
 				handle_merge(&$4->handle, &$3);
@@ -961,7 +1254,7 @@ table_block		:	/* empty */	{ $$ = $<table>-1; }
 			}
 			|	table_block	SET		set_identifier
 					set_block_alloc		'{'	set_block	'}'
-					stmt_seperator
+					stmt_separator
 			{
 				$4->location = @3;
 				handle_merge(&$4->handle, &$3);
@@ -971,12 +1264,54 @@ table_block		:	/* empty */	{ $$ = $<table>-1; }
 			}
 			|	table_block	MAP		set_identifier
 					map_block_alloc		'{'	map_block	'}'
-					stmt_seperator
+					stmt_separator
 			{
 				$4->location = @3;
 				handle_merge(&$4->handle, &$3);
 				handle_free(&$3);
 				list_add_tail(&$4->list, &$1->sets);
+				$$ = $1;
+			}
+			|	table_block	COUNTER		obj_identifier
+					obj_block_alloc	'{'	counter_block	'}'
+					stmt_separator
+			{
+				$4->location = @3;
+				$4->type = NFT_OBJECT_COUNTER;
+				handle_merge(&$4->handle, &$3);
+				handle_free(&$3);
+				list_add_tail(&$4->list, &$1->objs);
+				$$ = $1;
+			}
+			|	table_block	QUOTA		obj_identifier
+					obj_block_alloc	'{'	quota_block	'}'
+					stmt_separator
+			{
+				$4->location = @3;
+				$4->type = NFT_OBJECT_QUOTA;
+				handle_merge(&$4->handle, &$3);
+				handle_free(&$3);
+				list_add_tail(&$4->list, &$1->objs);
+				$$ = $1;
+			}
+			|	table_block	CT	HELPER	obj_identifier  obj_block_alloc '{'     ct_helper_block     '}' stmt_separator
+			{
+				$5->location = @4;
+				$5->type = NFT_OBJECT_CT_HELPER;
+				handle_merge(&$5->handle, &$4);
+				handle_free(&$4);
+				list_add_tail(&$5->list, &$1->objs);
+				$$ = $1;
+			}
+			|	table_block	LIMIT		obj_identifier
+					obj_block_alloc	'{'	limit_block	'}'
+					stmt_separator
+			{
+				$4->location = @3;
+				$4->type = NFT_OBJECT_LIMIT;
+				handle_merge(&$4->handle, &$3);
+				handle_free(&$3);
+				list_add_tail(&$4->list, &$1->objs);
 				$$ = $1;
 			}
 			;
@@ -990,10 +1325,10 @@ chain_block_alloc	:	/* empty */
 
 chain_block		:	/* empty */	{ $$ = $<chain>-1; }
 			|	chain_block	common_block
-	     		|	chain_block	stmt_seperator
-			|	chain_block	hook_spec	stmt_seperator
-			|	chain_block	policy_spec	stmt_seperator
-			|	chain_block	rule		stmt_seperator
+			|	chain_block	stmt_separator
+			|	chain_block	hook_spec	stmt_separator
+			|	chain_block	policy_spec	stmt_separator
+			|	chain_block	rule		stmt_separator
 			{
 				list_add_tail(&$2->list, &$1->rules);
 				$$ = $1;
@@ -1008,33 +1343,37 @@ set_block_alloc		:	/* empty */
 
 set_block		:	/* empty */	{ $$ = $<set>-1; }
 			|	set_block	common_block
-			|	set_block	stmt_seperator
-			|	set_block	TYPE		data_type	stmt_seperator
+			|	set_block	stmt_separator
+			|	set_block	TYPE		data_type_expr	stmt_separator
 			{
-				$1->keytype = $3;
+				$1->key = $3;
 				$$ = $1;
 			}
-			|	set_block	FLAGS		set_flag_list	stmt_seperator
+			|	set_block	FLAGS		set_flag_list	stmt_separator
 			{
 				$1->flags = $3;
 				$$ = $1;
 			}
-			|	set_block	TIMEOUT		time_spec	stmt_seperator
+			|	set_block	TIMEOUT		time_spec	stmt_separator
 			{
 				$1->timeout = $3 * 1000;
 				$$ = $1;
 			}
-			|	set_block	GC_INTERVAL	time_spec	stmt_seperator
+			|	set_block	GC_INTERVAL	time_spec	stmt_separator
 			{
 				$1->gc_int = $3 * 1000;
 				$$ = $1;
 			}
-			|	set_block	ELEMENTS	'='		set_expr
+			|	set_block	ELEMENTS	'='		set_block_expr
 			{
 				$1->init = $4;
 				$$ = $1;
 			}
-			|	set_block	set_mechanism	stmt_seperator
+			|	set_block	set_mechanism	stmt_separator
+			;
+
+set_block_expr		:	set_expr
+			|	variable_expr
 			;
 
 set_flag_list		:	set_flag_list	COMMA		set_flag
@@ -1044,40 +1383,69 @@ set_flag_list		:	set_flag_list	COMMA		set_flag
 			|	set_flag
 			;
 
-set_flag		:	CONSTANT	{ $$ = SET_F_CONSTANT; }
-			|	INTERVAL	{ $$ = SET_F_INTERVAL; }
-			|	TIMEOUT		{ $$ = SET_F_TIMEOUT; }
+set_flag		:	CONSTANT	{ $$ = NFT_SET_CONSTANT; }
+			|	INTERVAL	{ $$ = NFT_SET_INTERVAL; }
+			|	TIMEOUT		{ $$ = NFT_SET_TIMEOUT; }
 			;
 
 map_block_alloc		:	/* empty */
 			{
 				$$ = set_alloc(NULL);
-				$$->flags |= NFT_SET_MAP;
 			}
 			;
 
 map_block		:	/* empty */	{ $$ = $<set>-1; }
 			|	map_block	common_block
-			|	map_block	stmt_seperator
+			|	map_block	stmt_separator
 			|	map_block	TYPE
-						data_type	COLON	data_type
-						stmt_seperator
+						data_type_expr	COLON	data_type_expr
+						stmt_separator
 			{
-				$1->keytype  = $3;
-				$1->datatype = $5;
+				$1->key = $3;
+				$1->datatype = $5->dtype;
+
+				expr_free($5);
+				$1->flags |= NFT_SET_MAP;
 				$$ = $1;
 			}
-			|	map_block	FLAGS		set_flag_list	stmt_seperator
+			|	map_block	TYPE
+						data_type_expr	COLON	COUNTER
+						stmt_separator
 			{
-				$1->flags = $3;
+				$1->key = $3;
+				$1->objtype = NFT_OBJECT_COUNTER;
+				$1->flags  |= NFT_SET_OBJECT;
 				$$ = $1;
 			}
-			|	map_block	ELEMENTS	'='		set_expr
+			|	map_block	TYPE
+						data_type_expr	COLON	QUOTA
+						stmt_separator
+			{
+				$1->key = $3;
+				$1->objtype = NFT_OBJECT_QUOTA;
+				$1->flags  |= NFT_SET_OBJECT;
+				$$ = $1;
+			}
+			|	map_block	TYPE
+						data_type_expr	COLON	LIMIT
+						stmt_separator
+			{
+				$1->key = $3;
+				$1->objtype = NFT_OBJECT_LIMIT;
+				$1->flags  |= NFT_SET_OBJECT;
+				$$ = $1;
+			}
+			|	map_block	FLAGS		set_flag_list	stmt_separator
+			{
+				$1->flags |= $3;
+				$$ = $1;
+			}
+			|	map_block	ELEMENTS	'='		set_block_expr
 			{
 				$1->init = $4;
 				$$ = $1;
 			}
-			|	map_block	set_mechanism	stmt_seperator
+			|	map_block	set_mechanism	stmt_separator
 			;
 
 set_mechanism		:	POLICY		set_policy_spec
@@ -1094,34 +1462,82 @@ set_policy_spec		:	PERFORMANCE	{ $$ = NFT_SET_POL_PERFORMANCE; }
 			|	MEMORY		{ $$ = NFT_SET_POL_MEMORY; }
 			;
 
-data_type		:	type_identifier_list
-			{
-				if ($1 & ~TYPE_MASK)
-					$$ = concat_type_alloc($1);
-				else
-					$$ = datatype_lookup($1);
-			}
-			;
-
-type_identifier_list	:	type_identifier
+data_type_atom_expr	:	type_identifier
 			{
 				const struct datatype *dtype = datatype_lookup_byname($1);
 				if (dtype == NULL) {
 					erec_queue(error(&@1, "unknown datatype %s", $1),
 						   state->msgs);
+					xfree($1);
 					YYERROR;
 				}
-				$$ = dtype->type;
+				$$ = constant_expr_alloc(&@1, dtype, dtype->byteorder,
+							 dtype->size, NULL);
 			}
-			|	type_identifier_list	DOT	type_identifier
+			;
+
+data_type_expr		:	data_type_atom_expr
+			|	data_type_expr	DOT	data_type_atom_expr
 			{
-				const struct datatype *dtype = datatype_lookup_byname($3);
-				if (dtype == NULL) {
-					erec_queue(error(&@3, "unknown datatype %s", $3),
-						   state->msgs);
-					YYERROR;
+				if ($1->ops->type != EXPR_CONCAT) {
+					$$ = concat_expr_alloc(&@$);
+					compound_expr_add($$, $1);
+				} else {
+					struct location rhs[] = {
+						[1]	= @2,
+						[2]	= @3,
+					};
+					location_update(&$3->location, rhs, 2);
+
+					$$ = $1;
+					$$->location = @$;
 				}
-				$$ = concat_subtype_add($$, dtype->type);
+				compound_expr_add($$, $3);
+			}
+			;
+
+obj_block_alloc		:       /* empty */
+			{
+				$$ = obj_alloc(NULL);
+			}
+			;
+
+counter_block		:	/* empty */	{ $$ = $<obj>-1; }
+			|       counter_block     common_block
+			|       counter_block     stmt_separator
+			|       counter_block     counter_config
+			{
+				$1->counter = *$2;
+				$$ = $1;
+			}
+			;
+
+quota_block		:	/* empty */	{ $$ = $<obj>-1; }
+			|       quota_block     common_block
+			|       quota_block     stmt_separator
+			|       quota_block     quota_config
+			{
+				$1->quota = *$2;
+				$$ = $1;
+			}
+			;
+
+ct_helper_block		:	/* empty */	{ $$ = $<obj>-1; }
+			|       ct_helper_block     common_block
+			|       ct_helper_block     stmt_separator
+			|       ct_helper_block     ct_helper_config
+			{
+				$$ = $1;
+			}
+			;
+
+limit_block		:	/* empty */	{ $$ = $<obj>-1; }
+			|       limit_block     common_block
+			|       limit_block     stmt_separator
+			|       limit_block     limit_config
+			{
+				$1->limit = *$2;
+				$$ = $1;
 			}
 			;
 
@@ -1138,6 +1554,7 @@ hook_spec		:	TYPE		STRING		HOOK		STRING		dev_spec	PRIORITY	prio_spec
 				if (chain_type == NULL) {
 					erec_queue(error(&@2, "unknown chain type %s", $2),
 						   state->msgs);
+					xfree($2);
 					YYERROR;
 				}
 				$<chain>0->type		= xstrdup(chain_type);
@@ -1147,6 +1564,7 @@ hook_spec		:	TYPE		STRING		HOOK		STRING		dev_spec	PRIORITY	prio_spec
 				if ($<chain>0->hookstr == NULL) {
 					erec_queue(error(&@4, "unknown chain hook %s", $4),
 						   state->msgs);
+					xfree($4);
 					YYERROR;
 				}
 				xfree($4);
@@ -1194,6 +1612,7 @@ time_spec		:	STRING
 				uint64_t res;
 
 				erec = time_parse(&@1, $1, &res);
+				xfree($1);
 				if (erec != NULL) {
 					erec_queue(erec, state->msgs);
 					YYERROR;
@@ -1250,35 +1669,51 @@ set_identifier		:	identifier
 			}
 			;
 
-handle_spec		:	/* empty */
-			{
-				memset(&$$, 0, sizeof($$));
-			}
-			|	HANDLE		NUM
-			{
-				memset(&$$, 0, sizeof($$));
-				$$.location	= @$;
-				$$.id		= $2;
-			}
-			;
-
-position_spec		:	/* empty */
-			{
-				memset(&$$, 0, sizeof($$));
-			}
-			|	POSITION	NUM
-			{
-				memset(&$$, 0, sizeof($$));
-				$$.location	= @$;
-				$$.id		= $2;
-			}
-			;
-
-ruleid_spec		:	chain_spec	handle_spec	position_spec
+obj_spec		:	table_spec	identifier
 			{
 				$$		= $1;
-				$$.handle	= $2;
-				$$.position	= $3;
+				$$.obj		= $2;
+			}
+			;
+
+obj_identifier		:	identifier
+			{
+				memset(&$$, 0, sizeof($$));
+				$$.obj		= $1;
+			}
+			;
+
+handle_spec		:	HANDLE		NUM
+			{
+				memset(&$$, 0, sizeof($$));
+				$$.handle.location	= @$;
+				$$.handle.id		= $2;
+			}
+			;
+
+position_spec		:	POSITION	NUM
+			{
+				memset(&$$, 0, sizeof($$));
+				$$.position.location	= @$;
+				$$.position.id		= $2;
+			}
+			;
+
+rule_position		:	chain_spec
+			{
+				$$ = $1;
+			}
+			|	chain_spec	position_spec
+			{
+				handle_merge(&$1, &$2);
+				$$ = $1;
+			}
+			;
+
+ruleid_spec		:	chain_spec	handle_spec
+			{
+				handle_merge(&$1, &$2);
+				$$ = $1;
 			}
 			;
 
@@ -1348,6 +1783,7 @@ stmt			:	verdict_stmt
 			|	meta_stmt
 			|	log_stmt
 			|	limit_stmt
+			|	quota_stmt
 			|	reject_stmt
 			|	nat_stmt
 			|	queue_stmt
@@ -1391,7 +1827,7 @@ verdict_map_expr	:	'{'	verdict_map_list_expr	'}'
 
 verdict_map_list_expr	:	verdict_map_list_member_expr
 			{
-				$$ = set_expr_alloc(&@$);
+				$$ = set_expr_alloc(&@$, NULL);
 				compound_expr_add($$, $1);
 			}
 			|	verdict_map_list_expr	COMMA	verdict_map_list_member_expr
@@ -1414,6 +1850,12 @@ counter_stmt		:	counter_stmt_alloc
 counter_stmt_alloc	:	COUNTER
 			{
 				$$ = counter_stmt_alloc(&@$);
+			}
+			|	COUNTER		NAME	stmt_expr
+			{
+				$$ = objref_stmt_alloc(&@$);
+				$$->objref.type = NFT_OBJECT_COUNTER;
+				$$->objref.expr = $3;
 			}
 			;
 
@@ -1476,16 +1918,77 @@ log_arg			:	PREFIX			string
 				$<stmt>0->log.level	= $2;
 				$<stmt>0->log.flags 	|= STMT_LOG_LEVEL;
 			}
+			|	FLAGS			log_flags
+			{
+				$<stmt>0->log.logflags	|= $2;
+			}
 			;
 
-level_type		:	LEVEL_EMERG	{ $$ = LOG_EMERG; }
-			|	LEVEL_ALERT	{ $$ = LOG_ALERT; }
-			|	LEVEL_CRIT	{ $$ = LOG_CRIT; }
-			|	LEVEL_ERR	{ $$ = LOG_ERR; }
-			|	LEVEL_WARN	{ $$ = LOG_WARNING; }
-			|	LEVEL_NOTICE	{ $$ = LOG_NOTICE; }
-			|	LEVEL_INFO	{ $$ = LOG_INFO; }
-			|	LEVEL_DEBUG	{ $$ = LOG_DEBUG; }
+level_type		:	string
+			{
+				if (!strcmp("emerg", $1))
+					$$ = LOG_EMERG;
+				else if (!strcmp("alert", $1))
+					$$ = LOG_ALERT;
+				else if (!strcmp("crit", $1))
+					$$ = LOG_CRIT;
+				else if (!strcmp("err", $1))
+					$$ = LOG_ERR;
+				else if (!strcmp("warn", $1))
+					$$ = LOG_WARNING;
+				else if (!strcmp("notice", $1))
+					$$ = LOG_NOTICE;
+				else if (!strcmp("info", $1))
+					$$ = LOG_INFO;
+				else if (!strcmp("debug", $1))
+					$$ = LOG_DEBUG;
+				else {
+					erec_queue(error(&@1, "invalid log level"),
+						   state->msgs);
+					xfree($1);
+					YYERROR;
+				}
+				xfree($1);
+			}
+			;
+
+log_flags		:	TCP	log_flags_tcp
+			{
+				$$ = $2;
+			}
+			|	IP	OPTIONS
+			{
+				$$ = NF_LOG_IPOPT;
+			}
+			|	SKUID
+			{
+				$$ = NF_LOG_UID;
+			}
+			|	ETHER
+			{
+				$$ = NF_LOG_MACDECODE;
+			}
+			|	ALL
+			{
+				$$ = NF_LOG_MASK;
+			}
+			;
+
+log_flags_tcp		:	log_flags_tcp	COMMA	log_flag_tcp
+			{
+				$$ = $1 | $3;
+			}
+			|	log_flag_tcp
+			;
+
+log_flag_tcp		:	SEQUENCE
+			{
+				$$ = NF_LOG_TCPSEQ;
+			}
+			|	OPTIONS
+			{
+				$$ = NF_LOG_TCPOPT;
+			}
 			;
 
 limit_stmt		:	LIMIT	RATE	limit_mode	NUM	SLASH	time_unit	limit_burst
@@ -1503,6 +2006,7 @@ limit_stmt		:	LIMIT	RATE	limit_mode	NUM	SLASH	time_unit	limit_burst
 				uint64_t rate, unit;
 
 				erec = rate_parse(&@$, $5, &rate, &unit);
+				xfree($5);
 				if (erec != NULL) {
 					erec_queue(erec, state->msgs);
 					YYERROR;
@@ -1514,6 +2018,61 @@ limit_stmt		:	LIMIT	RATE	limit_mode	NUM	SLASH	time_unit	limit_burst
 				$$->limit.burst	= $6;
 				$$->limit.type	= NFT_LIMIT_PKT_BYTES;
 				$$->limit.flags = $3;
+			}
+			|	LIMIT	NAME	stmt_expr
+			{
+				$$ = objref_stmt_alloc(&@$);
+				$$->objref.type = NFT_OBJECT_LIMIT;
+				$$->objref.expr = $3;
+			}
+			;
+
+quota_mode		:	OVER		{ $$ = NFT_QUOTA_F_INV; }
+			|	UNTIL		{ $$ = 0; }
+			|	/* empty */	{ $$ = 0; }
+			;
+
+quota_unit		:	BYTES		{ $$ = xstrdup("bytes"); }
+			|	STRING		{ $$ = $1; }
+			;
+
+quota_used		:	/* empty */	{ $$ = 0; }
+			|	USED NUM quota_unit
+			{
+				struct error_record *erec;
+				uint64_t rate;
+
+				erec = data_unit_parse(&@$, $3, &rate);
+				xfree($3);
+				if (erec != NULL) {
+					erec_queue(erec, state->msgs);
+					YYERROR;
+				}
+				$$ = $2 * rate;
+			}
+			;
+
+quota_stmt		:	QUOTA	quota_mode NUM quota_unit quota_used
+			{
+				struct error_record *erec;
+				uint64_t rate;
+
+				erec = data_unit_parse(&@$, $4, &rate);
+				xfree($4);
+				if (erec != NULL) {
+					erec_queue(erec, state->msgs);
+					YYERROR;
+				}
+				$$ = quota_stmt_alloc(&@$);
+				$$->quota.bytes	= $3 * rate;
+				$$->quota.used = $5;
+				$$->quota.flags	= $2;
+			}
+			|	QUOTA	NAME	stmt_expr
+			{
+				$$ = objref_stmt_alloc(&@$);
+				$$->objref.type = NFT_OBJECT_QUOTA;
+				$$->objref.expr = $3;
 			}
 			;
 
@@ -1531,6 +2090,7 @@ limit_burst		:	/* empty */			{ $$ = 0; }
 				uint64_t rate;
 
 				erec = data_unit_parse(&@$, $3, &rate);
+				xfree($3);
 				if (erec != NULL) {
 					erec_queue(erec, state->msgs);
 					YYERROR;
@@ -1569,6 +2129,7 @@ reject_opts		:       /* empty */
 							  current_scope(state),
 							  $4);
 				$<stmt>0->reject.expr->dtype = &icmp_code_type;
+				xfree($4);
 			}
 			|	WITH	ICMP6	TYPE	STRING
 			{
@@ -1579,6 +2140,7 @@ reject_opts		:       /* empty */
 							  current_scope(state),
 							  $4);
 				$<stmt>0->reject.expr->dtype = &icmpv6_code_type;
+				xfree($4);
 			}
 			|	WITH	ICMPX	TYPE	STRING
 			{
@@ -1588,16 +2150,11 @@ reject_opts		:       /* empty */
 							  current_scope(state),
 							  $4);
 				$<stmt>0->reject.expr->dtype = &icmpx_code_type;
+				xfree($4);
 			}
-			|	WITH	TCP	STRING
+			|	WITH	TCP	RESET
 			{
-				if (strcmp($3, "reset") == 0) {
-					$<stmt>0->reject.type = NFT_REJECT_TCP_RST;
-				} else {
-					erec_queue(error(&@2, "unsupported reject type", $3),
-						   state->msgs);
-					YYERROR;
-				}
+				$<stmt>0->reject.type = NFT_REJECT_TCP_RST;
 			}
 			;
 
@@ -1616,8 +2173,55 @@ nat_stmt_alloc		:	SNAT
 			}
 			;
 
-concat_stmt_expr	:	primary_expr
-			|	concat_stmt_expr	DOT	primary_expr
+primary_stmt_expr	:	symbol_expr		{ $$ = $1; }
+			|	integer_expr		{ $$ = $1; }
+			|	boolean_expr		{ $$ = $1; }
+			|	meta_expr		{ $$ = $1; }
+			|	rt_expr			{ $$ = $1; }
+			|	ct_expr			{ $$ = $1; }
+			|	numgen_expr             { $$ = $1; }
+			|	hash_expr               { $$ = $1; }
+			|	payload_expr		{ $$ = $1; }
+			|	keyword_expr		{ $$ = $1; }
+			;
+
+shift_stmt_expr		:	primary_stmt_expr
+			|	shift_stmt_expr		LSHIFT		primary_stmt_expr
+			{
+				$$ = binop_expr_alloc(&@$, OP_LSHIFT, $1, $3);
+			}
+			|	shift_stmt_expr		RSHIFT		primary_rhs_expr
+			{
+				$$ = binop_expr_alloc(&@$, OP_RSHIFT, $1, $3);
+			}
+			;
+
+and_stmt_expr		:	shift_stmt_expr
+			|	and_stmt_expr		AMPERSAND	shift_stmt_expr
+			{
+				$$ = binop_expr_alloc(&@$, OP_AND, $1, $3);
+			}
+			;
+
+exclusive_or_stmt_expr	:	and_stmt_expr
+			|	exclusive_or_stmt_expr	CARET		and_stmt_expr
+			{
+				$$ = binop_expr_alloc(&@$, OP_XOR, $1, $3);
+			}
+			;
+
+inclusive_or_stmt_expr	:	exclusive_or_stmt_expr
+			|	inclusive_or_stmt_expr	'|'		exclusive_or_stmt_expr
+			{
+				$$ = binop_expr_alloc(&@$, OP_OR, $1, $3);
+			}
+			;
+
+basic_stmt_expr		:	inclusive_or_stmt_expr
+			;
+
+concat_stmt_expr	:	basic_stmt_expr
+			|	concat_stmt_expr	DOT	primary_stmt_expr
 			{
 				if ($$->ops->type != EXPR_CONCAT) {
 					$$ = concat_expr_alloc(&@$);
@@ -1636,29 +2240,75 @@ concat_stmt_expr	:	primary_expr
 			}
 			;
 
-map_stmt_expr		:	concat_stmt_expr	MAP	rhs_expr
+map_stmt_expr_set	:	set_expr
+			|	symbol_expr
+			;
+
+map_stmt_expr		:	concat_stmt_expr	MAP	map_stmt_expr_set
 			{
 				$$ = map_expr_alloc(&@$, $1, $3);
 			}
+			|	concat_stmt_expr	{ $$ = $1; }
+			;
+
+prefix_stmt_expr	:	basic_stmt_expr	SLASH	NUM
+			{
+				$$ = prefix_expr_alloc(&@$, $1, $3);
+			}
+			;
+
+range_stmt_expr		:	basic_stmt_expr	DASH	basic_stmt_expr
+			{
+				$$ = range_expr_alloc(&@$, $1, $3);
+			}
+			;
+
+wildcard_stmt_expr	:	ASTERISK
+			{
+				struct expr *expr;
+
+				expr = constant_expr_alloc(&@$, &integer_type,
+							   BYTEORDER_HOST_ENDIAN,
+							   0, NULL);
+				$$ = prefix_expr_alloc(&@$, expr, 0);
+			}
+			;
+
+multiton_stmt_expr	:	prefix_stmt_expr
+			|	range_stmt_expr
+			|	wildcard_stmt_expr
 			;
 
 stmt_expr		:	map_stmt_expr
-			|	multiton_rhs_expr
-			|	primary_rhs_expr
+			|	multiton_stmt_expr
+			|	list_stmt_expr
 			;
 
 nat_stmt_args		:	stmt_expr
 			{
 				$<stmt>0->nat.addr = $1;
 			}
+			|	TO	stmt_expr
+			{
+				$<stmt>0->nat.addr = $2;
+			}
 			|	stmt_expr	COLON	stmt_expr
 			{
 				$<stmt>0->nat.addr = $1;
 				$<stmt>0->nat.proto = $3;
 			}
+			|	TO	stmt_expr	COLON	stmt_expr
+			{
+				$<stmt>0->nat.addr = $2;
+				$<stmt>0->nat.proto = $4;
+			}
 			|	COLON		stmt_expr
 			{
 				$<stmt>0->nat.proto = $2;
+			}
+			|	TO	COLON		stmt_expr
+			{
+				$<stmt>0->nat.proto = $3;
 			}
 			|       nat_stmt_args   nf_nat_flags
 			{
@@ -1699,6 +2349,10 @@ redir_stmt_arg		:	TO	stmt_expr
 			{
 				$<stmt>0->redir.proto = $2;
 			}
+			|	TO	COLON	stmt_expr
+			{
+				$<stmt>0->redir.proto = $3;
+			}
 			|	nf_nat_flags
 			{
 				$<stmt>0->redir.flags = $1;
@@ -1707,6 +2361,11 @@ redir_stmt_arg		:	TO	stmt_expr
 			{
 				$<stmt>0->redir.proto = $2;
 				$<stmt>0->redir.flags = $3;
+			}
+			|	TO	COLON	stmt_expr	nf_nat_flags
+			{
+				$<stmt>0->redir.proto = $3;
+				$<stmt>0->redir.flags = $4;
 			}
 			;
 
@@ -1781,7 +2440,17 @@ queue_stmt_flag		:	BYPASS	{ $$ = NFT_QUEUE_FLAG_BYPASS; }
 			|	FANOUT	{ $$ = NFT_QUEUE_FLAG_CPU_FANOUT; }
 			;
 
-set_stmt		:	SET	set_stmt_op	set_elem_expr	symbol_expr
+set_elem_expr_stmt	:	set_elem_expr_stmt_alloc
+			|	set_elem_expr_stmt_alloc	set_elem_options
+			;
+
+set_elem_expr_stmt_alloc:	concat_expr
+			{
+				$$ = set_elem_expr_alloc(&@1, $1);
+			}
+			;
+
+set_stmt		:	SET	set_stmt_op	set_elem_expr_stmt	symbol_expr
 			{
 				$$ = set_stmt_alloc(&@$);
 				$$->set.op  = $2;
@@ -1835,26 +2504,30 @@ match_stmt		:	relational_expr
 			}
 			;
 
-symbol_expr		:	string
-			{
-				$$ = symbol_expr_alloc(&@$, SYMBOL_VALUE,
-						       current_scope(state),
-						       $1);
-				xfree($1);
-			}
-			|	'$'	identifier
+variable_expr		:	'$'	identifier
 			{
 				struct scope *scope = current_scope(state);
 
 				if (symbol_lookup(scope, $2) == NULL) {
 					erec_queue(error(&@2, "unknown identifier '%s'", $2),
 						   state->msgs);
+					xfree($2);
 					YYERROR;
 				}
 
 				$$ = symbol_expr_alloc(&@$, SYMBOL_DEFINE,
 						       scope, $2);
 				xfree($2);
+			}
+			;
+
+symbol_expr		:	variable_expr
+			|	string
+			{
+				$$ = symbol_expr_alloc(&@$, SYMBOL_VALUE,
+						       current_scope(state),
+						       $1);
+				xfree($1);
 			}
 			|	AT	identifier
 			{
@@ -1880,9 +2553,56 @@ primary_expr		:	symbol_expr			{ $$ = $1; }
 			|	integer_expr			{ $$ = $1; }
 			|	payload_expr			{ $$ = $1; }
 			|	exthdr_expr			{ $$ = $1; }
+			|	exthdr_exists_expr		{ $$ = $1; }
 			|	meta_expr			{ $$ = $1; }
+			|	rt_expr				{ $$ = $1; }
 			|	ct_expr				{ $$ = $1; }
+			|	numgen_expr			{ $$ = $1; }
+			|	hash_expr			{ $$ = $1; }
+			|	fib_expr			{ $$ = $1; }
 			|	'('	basic_expr	')'	{ $$ = $2; }
+			;
+
+fib_expr		:	FIB	fib_tuple	fib_result
+			{
+				if (($2 & (NFTA_FIB_F_SADDR|NFTA_FIB_F_DADDR)) == 0) {
+					erec_queue(error(&@2, "fib: need either saddr or daddr"), state->msgs);
+					YYERROR;
+				}
+
+				if (($2 & (NFTA_FIB_F_SADDR|NFTA_FIB_F_DADDR)) ==
+					  (NFTA_FIB_F_SADDR|NFTA_FIB_F_DADDR)) {
+					erec_queue(error(&@2, "fib: saddr and daddr are mutually exclusive"), state->msgs);
+					YYERROR;
+				}
+
+				if (($2 & (NFTA_FIB_F_IIF|NFTA_FIB_F_OIF)) ==
+					  (NFTA_FIB_F_IIF|NFTA_FIB_F_OIF)) {
+					erec_queue(error(&@2, "fib: iif and oif are mutually exclusive"), state->msgs);
+					YYERROR;
+				}
+
+				$$ = fib_expr_alloc(&@$, $2, $3);
+			}
+			;
+
+fib_result		:	OIF	{ $$ =NFT_FIB_RESULT_OIF; }
+			|	OIFNAME { $$ =NFT_FIB_RESULT_OIFNAME; }
+			|	TYPE	{ $$ =NFT_FIB_RESULT_ADDRTYPE; }
+			;
+
+fib_flag		:       SADDR	{ $$ = NFTA_FIB_F_SADDR; }
+			|	DADDR	{ $$ = NFTA_FIB_F_DADDR; }
+			|	MARK	{ $$ = NFTA_FIB_F_MARK; }
+			|	IIF	{ $$ = NFTA_FIB_F_IIF; }
+			|	OIF	{ $$ = NFTA_FIB_F_OIF; }
+			;
+
+fib_tuple		:  	fib_flag	DOT	fib_tuple
+			{
+				$$ = $1 | $3;
+			}
+			|	fib_flag
 			;
 
 shift_expr		:	primary_expr
@@ -1988,7 +2708,7 @@ set_expr		:	'{'	set_list_expr		'}'
 
 set_list_expr		:	set_list_member_expr
 			{
-				$$ = set_expr_alloc(&@$);
+				$$ = set_expr_alloc(&@$, NULL);
 				compound_expr_add($$, $1);
 			}
 			|	set_list_expr		COMMA	set_list_member_expr
@@ -2066,6 +2786,129 @@ initializer_expr	:	rhs_expr
 			|	list_rhs_expr
 			;
 
+counter_config		:	PACKETS		NUM	BYTES	NUM
+			{
+				struct counter *counter;
+
+				counter = xzalloc(sizeof(*counter));
+				counter->packets = $2;
+				counter->bytes = $4;
+				$$ = counter;
+			}
+			;
+
+counter_obj		:	counter_config
+			{
+				$$ = obj_alloc(&@$);
+				$$->type = NFT_OBJECT_COUNTER;
+				$$->counter = *$1;
+			}
+			;
+
+quota_config		:	quota_mode NUM quota_unit quota_used
+			{
+				struct error_record *erec;
+				struct quota *quota;
+				uint64_t rate;
+
+				erec = data_unit_parse(&@$, $3, &rate);
+				xfree($3);
+				if (erec != NULL) {
+					erec_queue(erec, state->msgs);
+					YYERROR;
+				}
+
+				quota = xzalloc(sizeof(*quota));
+				quota->bytes	= $2 * rate;
+				quota->used	= $4;
+				quota->flags	= $1;
+				$$ = quota;
+			}
+			;
+
+quota_obj		:	quota_config
+			{
+				$$ = obj_alloc(&@$);
+				$$->type = NFT_OBJECT_QUOTA;
+				$$->quota = *$1;
+			}
+			;
+
+ct_obj_type		:	HELPER		{ $$ = NFT_OBJECT_CT_HELPER; }
+			;
+
+ct_l4protoname		:	TCP	{ $$ = IPPROTO_TCP; }
+			|	UDP	{ $$ = IPPROTO_UDP; }
+			;
+
+ct_helper_config		:	TYPE	QUOTED_STRING	PROTOCOL	ct_l4protoname	stmt_separator
+			{
+				struct ct_helper *ct;
+				int ret;
+
+				ct = &$<obj>0->ct_helper;
+
+				ret = snprintf(ct->name, sizeof(ct->name), "%s", $2);
+				if (ret <= 0 || ret >= (int)sizeof(ct->name)) {
+					erec_queue(error(&@2, "invalid name '%s', max length is %u\n", $2, (int)sizeof(ct->name)), state->msgs);
+					YYERROR;
+				}
+
+				ct->l4proto = $4;
+			}
+			|	L3PROTOCOL	family_spec_explicit	stmt_separator
+			{
+				$<obj>0->ct_helper.l3proto = $2;
+			}
+			;
+
+ct_obj_alloc		:
+			{
+				$$ = obj_alloc(&@$);
+			}
+			;
+
+limit_config		:	RATE	limit_mode	NUM	SLASH	time_unit	limit_burst
+			{
+				struct limit *limit;
+				limit = xzalloc(sizeof(*limit));
+				limit->rate	= $3;
+				limit->unit	= $5;
+				limit->burst	= $6;
+				limit->type	= NFT_LIMIT_PKTS;
+				limit->flags	= $2;
+				$$ = limit;
+			}
+			|	RATE	limit_mode	NUM	STRING	limit_burst
+			{
+				struct limit *limit;
+				struct error_record *erec;
+				uint64_t rate, unit;
+
+				erec = rate_parse(&@$, $4, &rate, &unit);
+				if (erec != NULL) {
+					erec_queue(erec, state->msgs);
+					YYERROR;
+				}
+
+				limit = xzalloc(sizeof(*limit));
+				limit->rate	= rate * $3;
+				limit->unit	= unit;
+				limit->burst	= $5;
+				limit->type	= NFT_LIMIT_PKT_BYTES;
+				limit->flags	= $2;
+				$$ = limit;
+			}
+			;
+
+limit_obj		:	limit_config
+			{
+				$$ = obj_alloc(&@$);
+				$$->type = NFT_OBJECT_LIMIT;
+				$$->limit = *$1;
+			}
+			;
+
 relational_expr		:	expr	/* implicit */	rhs_expr
 			{
 				$$ = relational_expr_alloc(&@$, OP_IMPLICIT, $1, $2);
@@ -2077,6 +2920,10 @@ relational_expr		:	expr	/* implicit */	rhs_expr
 			|	expr	relational_op	rhs_expr
 			{
 				$$ = relational_expr_alloc(&@2, $2, $1, $3);
+			}
+			|	expr	relational_op	'(' rhs_expr ')'
+			{
+				$$ = relational_expr_alloc(&@2, $2, $1, $4);
 			}
 			;
 
@@ -2154,38 +3001,36 @@ concat_rhs_expr		:	basic_rhs_expr
 			}
 			;
 
+boolean_keys		:	EXISTS		{ $$ = true; }
+			|	MISSING		{ $$ = false; }
+			;
+
+boolean_expr		:	boolean_keys
+			{
+				$$ = constant_expr_alloc(&@$, &boolean_type,
+							 BYTEORDER_HOST_ENDIAN,
+							 1, &$1);
+			}
+			;
+
+keyword_expr		:	ETHER                   { $$ = symbol_value(&@$, "ether"); }
+			|	IP			{ $$ = symbol_value(&@$, "ip"); }
+			|	IP6			{ $$ = symbol_value(&@$, "ip6"); }
+			|	VLAN			{ $$ = symbol_value(&@$, "vlan"); }
+			|	ARP			{ $$ = symbol_value(&@$, "arp"); }
+			|	DNAT			{ $$ = symbol_value(&@$, "dnat"); }
+			|	SNAT			{ $$ = symbol_value(&@$, "snat"); }
+			|	ECN			{ $$ = symbol_value(&@$, "ecn"); }
+			|	RESET			{ $$ = symbol_value(&@$, "reset"); }
+			|	ORIGINAL		{ $$ = symbol_value(&@$, "original"); }
+			|	REPLY			{ $$ = symbol_value(&@$, "reply"); }
+			|	LABEL			{ $$ = symbol_value(&@$, "label"); }
+			;
+
 primary_rhs_expr	:	symbol_expr		{ $$ = $1; }
 			|	integer_expr		{ $$ = $1; }
-			|	ETHER
-			{
-				$$ = symbol_expr_alloc(&@$, SYMBOL_VALUE,
-						       current_scope(state),
-						       "ether");
-			}
-			|	IP
-			{
-				$$ = symbol_expr_alloc(&@$, SYMBOL_VALUE,
-						       current_scope(state),
-						       "ip");
-			}
-			|	IP6
-			{
-				$$ = symbol_expr_alloc(&@$, SYMBOL_VALUE,
-						       current_scope(state),
-						       "ip6");
-			}
-			|	VLAN
-			{
-				$$ = symbol_expr_alloc(&@$, SYMBOL_VALUE,
-						       current_scope(state),
-						       "vlan");
-			}
-			|	ARP
-			{
-				$$ = symbol_expr_alloc(&@$, SYMBOL_VALUE,
-						       current_scope(state),
-						       "arp");
-			}
+			|	boolean_expr		{ $$ = $1; }
+			|	keyword_expr		{ $$ = $1; }
 			|	TCP
 			{
 				uint8_t data = IPPROTO_TCP;
@@ -2263,24 +3108,6 @@ primary_rhs_expr	:	symbol_expr		{ $$ = $1; }
 							 BYTEORDER_HOST_ENDIAN,
 							 sizeof(data) * BITS_PER_BYTE, &data);
 			}
-			|	SNAT
-			{
-				$$ = symbol_expr_alloc(&@$, SYMBOL_VALUE,
-						       current_scope(state),
-						       "snat");
-			}
-			|	DNAT
-			{
-				$$ = symbol_expr_alloc(&@$, SYMBOL_VALUE,
-						       current_scope(state),
-						       "dnat");
-			}
-			|	ECN
-			{
-				$$ = symbol_expr_alloc(&@$, SYMBOL_VALUE,
-						       current_scope(state),
-						       "ecn");
-			}
 			;
 
 relational_op		:	EQ		{ $$ = OP_EQ; }
@@ -2325,17 +3152,29 @@ meta_expr		:	META	meta_key
 			{
 				$$ = meta_expr_alloc(&@$, $1);
 			}
-			;
+			|	META	STRING
+			{
+				struct error_record *erec;
+				unsigned int key;
+
+				erec = meta_key_parse(&@$, $2, &key);
+				xfree($2);
+				if (erec != NULL) {
+					erec_queue(erec, state->msgs);
+					YYERROR;
+				}
+
+				$$ = meta_expr_alloc(&@$, key);
+			}
 
 meta_key		:	meta_key_qualified
 			|	meta_key_unqualified
 			;
 
 meta_key_qualified	:	LENGTH		{ $$ = NFT_META_LEN; }
-			|	NFPROTO		{ $$ = NFT_META_NFPROTO; }
-			|	L4PROTO		{ $$ = NFT_META_L4PROTO; }
 			|	PROTOCOL	{ $$ = NFT_META_PROTOCOL; }
 			|	PRIORITY	{ $$ = NFT_META_PRIORITY; }
+			|	RANDOM		{ $$ = NFT_META_PRANDOM; }
 			;
 
 meta_key_unqualified	:	MARK		{ $$ = NFT_META_MARK; }
@@ -2358,66 +3197,198 @@ meta_key_unqualified	:	MARK		{ $$ = NFT_META_MARK; }
 			|       CGROUP		{ $$ = NFT_META_CGROUP; }
 			;
 
-meta_stmt		:	META	meta_key	SET	expr
+meta_stmt		:	META	meta_key	SET	stmt_expr
 			{
 				$$ = meta_stmt_alloc(&@$, $2, $4);
 			}
-			|	meta_key_unqualified	SET	expr
+			|	meta_key_unqualified	SET	stmt_expr
 			{
 				$$ = meta_stmt_alloc(&@$, $1, $3);
 			}
-			;
-
-ct_expr			: 	CT	ct_key
-			{
-				$$ = ct_expr_alloc(&@$, $2, -1);
-			}
-			|	CT	STRING	ct_key_dir
+			|	META	STRING	SET	stmt_expr
 			{
 				struct error_record *erec;
-				int8_t direction;
+				unsigned int key;
 
-				erec = ct_dir_parse(&@$, $2, &direction);
+				erec = meta_key_parse(&@$, $2, &key);
+				xfree($2);
 				if (erec != NULL) {
 					erec_queue(erec, state->msgs);
 					YYERROR;
 				}
 
-				$$ = ct_expr_alloc(&@$, $3, direction);
+				$$ = meta_stmt_alloc(&@$, key, $4);
+			}
+			|	NOTRACK
+			{
+				$$ = notrack_stmt_alloc(&@$);
 			}
 			;
 
-ct_key			:	STATE		{ $$ = NFT_CT_STATE; }
+offset_opt		:	/* empty */	{ $$ = 0; }
+			|	OFFSET	NUM	{ $$ = $2; }
+			;
+
+numgen_type		:	INC		{ $$ = NFT_NG_INCREMENTAL; }
+			|	RANDOM		{ $$ = NFT_NG_RANDOM; }
+			;
+
+numgen_expr		:	NUMGEN	numgen_type	MOD	NUM	offset_opt
+			{
+				$$ = numgen_expr_alloc(&@$, $2, $4, $5);
+			}
+			;
+
+hash_expr		:	JHASH		expr	MOD	NUM	SEED	NUM	offset_opt
+			{
+				$$ = hash_expr_alloc(&@$, $4, true, $6, $7, NFT_HASH_JENKINS);
+				$$->hash.expr = $2;
+			}
+			|	JHASH		expr	MOD	NUM	offset_opt
+			{
+				$$ = hash_expr_alloc(&@$, $4, false, 0, $5, NFT_HASH_JENKINS);
+				$$->hash.expr = $2;
+			}
+			|	SYMHASH		MOD	NUM	offset_opt
+			{
+				$$ = hash_expr_alloc(&@$, $3, false, 0, $4, NFT_HASH_SYM);
+			}
+			;
+
+rt_key_proto		:	IP		{ $$ = NFPROTO_IPV4; }
+			|	IP6		{ $$ = NFPROTO_IPV6; }
+			;
+
+rt_expr			:	RT	rt_key
+			{
+				$$ = rt_expr_alloc(&@$, $2, true);
+			}
+			|	RT	rt_key_proto	rt_key
+			{
+				enum nft_rt_keys rtk = $3;
+
+				switch ($2) {
+				case NFPROTO_IPV4:
+					break;
+				case NFPROTO_IPV6:
+					if ($3 == NFT_RT_NEXTHOP4)
+						rtk = NFT_RT_NEXTHOP6;
+					break;
+				default:
+					YYERROR;
+					break;
+				}
+
+				$$ = rt_expr_alloc(&@$, rtk, false);
+			}
+			;
+
+rt_key			:	CLASSID		{ $$ = NFT_RT_CLASSID; }
+			|	NEXTHOP		{ $$ = NFT_RT_NEXTHOP4; }
+			|	MTU		{ $$ = NFT_RT_TCPMSS; }
+			;
+
+ct_expr			: 	CT	ct_key
+			{
+				$$ = ct_expr_alloc(&@$, $2, -1, NFPROTO_UNSPEC);
+			}
+			|	CT	ct_dir	ct_key_dir
+			{
+				$$ = ct_expr_alloc(&@$, $3, $2, NFPROTO_UNSPEC);
+			}
+			|	CT	ct_dir	ct_key_proto ct_key_proto_field
+			{
+				$$ = ct_expr_alloc(&@$, $4, $2, $3);
+			}
+			;
+
+ct_dir			:	ORIGINAL	{ $$ = IP_CT_DIR_ORIGINAL; }
+			|	REPLY		{ $$ = IP_CT_DIR_REPLY; }
+			;
+
+ct_key			:	L3PROTOCOL	{ $$ = NFT_CT_L3PROTOCOL; }
+			|	PROTOCOL	{ $$ = NFT_CT_PROTOCOL; }
+			|	MARK		{ $$ = NFT_CT_MARK; }
+			|	STATE		{ $$ = NFT_CT_STATE; }
 			|	DIRECTION	{ $$ = NFT_CT_DIRECTION; }
 			|	STATUS		{ $$ = NFT_CT_STATUS; }
-			|	MARK		{ $$ = NFT_CT_MARK; }
 			|	EXPIRATION	{ $$ = NFT_CT_EXPIRATION; }
 			|	HELPER		{ $$ = NFT_CT_HELPER; }
+			|	SADDR		{ $$ = NFT_CT_SRC; }
+			|	DADDR		{ $$ = NFT_CT_DST; }
+			|	PROTO_SRC	{ $$ = NFT_CT_PROTO_SRC; }
+			|	PROTO_DST	{ $$ = NFT_CT_PROTO_DST; }
 			|	LABEL		{ $$ = NFT_CT_LABELS; }
-			|	ct_key_counters
+			|	EVENT		{ $$ = NFT_CT_EVENTMASK; }
+			|	ct_key_dir_optional
 			;
+
 ct_key_dir		:	SADDR		{ $$ = NFT_CT_SRC; }
 			|	DADDR		{ $$ = NFT_CT_DST; }
 			|	L3PROTOCOL	{ $$ = NFT_CT_L3PROTOCOL; }
 			|	PROTOCOL	{ $$ = NFT_CT_PROTOCOL; }
 			|	PROTO_SRC	{ $$ = NFT_CT_PROTO_SRC; }
 			|	PROTO_DST	{ $$ = NFT_CT_PROTO_DST; }
-			|	ct_key_counters
+			|	ct_key_dir_optional
 			;
 
-ct_key_counters		:	BYTES		{ $$ = NFT_CT_BYTES; }
+ct_key_proto		:	IP		{ $$ = NFPROTO_IPV4; }
+			|	IP6		{ $$ = NFPROTO_IPV6; }
+			;
+
+ct_key_proto_field	:	SADDR		{ $$ = NFT_CT_SRC; }
+			|	DADDR		{ $$ = NFT_CT_DST; }
+			;
+
+ct_key_dir_optional	:	BYTES		{ $$ = NFT_CT_BYTES; }
 			|	PACKETS		{ $$ = NFT_CT_PKTS; }
+			|	AVGPKT		{ $$ = NFT_CT_AVGPKT; }
+			|	ZONE		{ $$ = NFT_CT_ZONE; }
 			;
 
-ct_stmt			:	CT	ct_key		SET	expr
+symbol_stmt_expr		:	symbol_expr
+			|	keyword_expr
+			;
+
+list_stmt_expr		:	symbol_stmt_expr	COMMA	symbol_stmt_expr
 			{
-				$$ = ct_stmt_alloc(&@$, $2, $4);
+				$$ = list_expr_alloc(&@$);
+				compound_expr_add($$, $1);
+				compound_expr_add($$, $3);
+			}
+			|	list_stmt_expr	COMMA	symbol_stmt_expr
+			{
+				$1->location = @$;
+				compound_expr_add($1, $3);
+				$$ = $1;
 			}
 			;
 
-payload_stmt		:	payload_expr		SET	expr
+ct_stmt			:	CT	ct_key		SET	stmt_expr
 			{
-				$$ = payload_stmt_alloc(&@$, $1, $3);
+				switch ($2) {
+				case NFT_CT_HELPER:
+					$$ = objref_stmt_alloc(&@$);
+					$$->objref.type = NFT_OBJECT_CT_HELPER;
+					$$->objref.expr = $4;
+					break;
+				default:
+					$$ = ct_stmt_alloc(&@$, $2, -1, $4);
+					break;
+				}
+			}
+			|	CT	ct_dir	ct_key_dir_optional SET	stmt_expr
+			{
+				$$ = ct_stmt_alloc(&@$, $3, $2, $5);
+			}
+			;
+
+payload_stmt		:	payload_expr		SET	stmt_expr
+			{
+				if ($1->ops->type == EXPR_EXTHDR)
+					$$ = exthdr_stmt_alloc(&@$, $1, $3);
+				else
+					$$ = payload_stmt_alloc(&@$, $1, $3);
 			}
 			;
 
@@ -2619,6 +3590,15 @@ tcp_hdr_expr		:	TCP	tcp_hdr_field
 			{
 				$$ = payload_expr_alloc(&@$, &proto_tcp, $2);
 			}
+			|	TCP	OPTION	tcp_hdr_option_type tcp_hdr_option_field
+			{
+				$$ = tcpopt_expr_alloc(&@$, $3, $4);
+			}
+			|	TCP	OPTION	tcp_hdr_option_type
+			{
+				$$ = tcpopt_expr_alloc(&@$, $3, TCPOPTHDR_FIELD_KIND);
+				$$->exthdr.flags = NFT_EXTHDR_F_PRESENT;
+			}
 			;
 
 tcp_hdr_field		:	SPORT		{ $$ = TCPHDR_SPORT; }
@@ -2631,6 +3611,30 @@ tcp_hdr_field		:	SPORT		{ $$ = TCPHDR_SPORT; }
 			|	WINDOW		{ $$ = TCPHDR_WINDOW; }
 			|	CHECKSUM	{ $$ = TCPHDR_CHECKSUM; }
 			|	URGPTR		{ $$ = TCPHDR_URGPTR; }
+			;
+
+tcp_hdr_option_type	:	EOL		{ $$ = TCPOPTHDR_EOL; }
+			|	NOOP		{ $$ = TCPOPTHDR_NOOP; }
+			|	MAXSEG		{ $$ = TCPOPTHDR_MAXSEG; }
+			|	WINDOW		{ $$ = TCPOPTHDR_WINDOW; }
+			|	SACK_PERMITTED	{ $$ = TCPOPTHDR_SACK_PERMITTED; }
+			|	SACK		{ $$ = TCPOPTHDR_SACK0; }
+			|	SACK0		{ $$ = TCPOPTHDR_SACK0; }
+			|	SACK1		{ $$ = TCPOPTHDR_SACK1; }
+			|	SACK2		{ $$ = TCPOPTHDR_SACK2; }
+			|	SACK3		{ $$ = TCPOPTHDR_SACK3; }
+			|	ECHO		{ $$ = TCPOPTHDR_ECHO; }
+			|	TIMESTAMP	{ $$ = TCPOPTHDR_TIMESTAMP; }
+			;
+
+tcp_hdr_option_field	:	KIND		{ $$ = TCPOPTHDR_FIELD_KIND; }
+			|	LENGTH		{ $$ = TCPOPTHDR_FIELD_LENGTH; }
+			|	SIZE		{ $$ = TCPOPTHDR_FIELD_SIZE; }
+			|	COUNT		{ $$ = TCPOPTHDR_FIELD_COUNT; }
+			|	LEFT		{ $$ = TCPOPTHDR_FIELD_LEFT; }
+			|	RIGHT		{ $$ = TCPOPTHDR_FIELD_RIGHT; }
+			|	TSVAL		{ $$ = TCPOPTHDR_FIELD_TSVAL; }
+			|	TSECR		{ $$ = TCPOPTHDR_FIELD_TSECR; }
 			;
 
 dccp_hdr_expr		:	DCCP	dccp_hdr_field
@@ -2743,6 +3747,27 @@ mh_hdr_field		:	NEXTHDR		{ $$ = MHHDR_NEXTHDR; }
 			|	TYPE		{ $$ = MHHDR_TYPE; }
 			|	RESERVED	{ $$ = MHHDR_RESERVED; }
 			|	CHECKSUM	{ $$ = MHHDR_CHECKSUM; }
+			;
+
+exthdr_exists_expr	:	EXTHDR	exthdr_key
+			{
+				const struct exthdr_desc *desc;
+
+				desc = exthdr_find_proto($2);
+
+				/* Assume that NEXTHDR template is always
+				 * the fist one in list of templates.
+				 */
+				$$ = exthdr_expr_alloc(&@$, desc, 1);
+				$$->exthdr.flags = NFT_EXTHDR_F_PRESENT;
+			}
+			;
+
+exthdr_key		:	HBH	{ $$ = IPPROTO_HOPOPTS; }
+			|	RT	{ $$ = IPPROTO_ROUTING; }
+			|	FRAG	{ $$ = IPPROTO_FRAGMENT; }
+			|	DST	{ $$ = IPPROTO_DSTOPTS; }
+			|	MH	{ $$ = IPPROTO_MH; }
 			;
 
 %%
