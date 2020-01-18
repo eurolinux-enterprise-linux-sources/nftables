@@ -1,0 +1,104 @@
+From 3344672e56bad6468981d1bf683c312b18957671 Mon Sep 17 00:00:00 2001
+From: Phil Sutter <psutter@redhat.com>
+Date: Thu, 4 Apr 2019 13:02:55 +0200
+Subject: [PATCH] doc: Add minimal description of (v)map statements
+
+Bugzilla: https://bugzilla.redhat.com/show_bug.cgi?id=1628974
+Upstream Status: nftables commit 3b29acc8f2994
+Conflicts: Changes applied manually to doc/nft.xml, upstream switched to
+           using asciidoc.
+
+commit 3b29acc8f29944c5cf34259f2e2b5b40b4d0ccdd
+Author: Phil Sutter <phil@nwl.cc>
+Date:   Tue Apr 2 15:36:42 2019 +0200
+
+    doc: Add minimal description of (v)map statements
+
+    Although quite useful, these were missing in man page. Content loosely
+    based on wiki documentation.
+
+    Signed-off-by: Phil Sutter <phil@nwl.cc>
+    Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>
+---
+ doc/nft.xml | 65 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 65 insertions(+)
+
+diff --git a/doc/nft.xml b/doc/nft.xml
+index 12b6cea..5ab363f 100644
+--- a/doc/nft.xml
++++ b/doc/nft.xml
+@@ -5012,6 +5012,71 @@ add rule nat prerouting tcp dport 22 redirect to :2222
+ 				</table>
+ 			</para>
+ 		</refsect2>
++		<refsect2>
++			<title>Map statement</title>
++			<para>
++				The map statement is used to lookup data based on some specific input key.
++			</para>
++			<para>
++				<cmdsynopsis>
++					<replaceable>expression</replaceable>
++					<command>map {</command>
++					<replaceable>key</replaceable>
++					<command>:</command>
++					<replaceable>value</replaceable>
++					<arg choice="opt" rep="repeat">
++						<command>,</command>
++						<replaceable>key</replaceable>
++						<command>:</command>
++						<replaceable>value</replaceable>
++					</arg>
++					<command>}</command>
++				</cmdsynopsis>
++			</para>
++			<example>
++				<title>using the map statement</title>
++				<programlisting>
++# select DNAT target based on TCP dport:
++# connections to port 80 are redirected to 192.168.1.100,
++# connections to port 8888 are redirected to 192.168.1.101
++nft add rule ip nat prerouting dnat tcp dport map { 80 : 192.168.1.100, 8888 : 192.168.1.101 }
++
++# source address based SNAT:
++# packets from net 192.168.1.0/24 will appear as originating from 10.0.0.1,
++# packets from net 192.168.2.0/24 will appear as originating from 10.0.0.2
++nft add rule ip nat postrouting snat to ip saddr map { 192.168.1.0/24 : 10.0.0.1, 192.168.2.0/24 : 10.0.0.2 }
++				</programlisting>
++			</example>
++		</refsect2>
++		<refsect2>
++			<title>Vmap statement</title>
++			<para>
++				The verdict map (vmap) statement works analogous to the map statement, but contains verdicts as values.
++			</para>
++			<para>
++				<cmdsynopsis>
++					<replaceable>expression</replaceable>
++					<command>vmap {</command>
++					<replaceable>key</replaceable>
++					<command>:</command>
++					<replaceable>value</replaceable>
++					<arg choice="opt" rep="repeat">
++						<command>,</command>
++						<replaceable>key</replaceable>
++						<command>:</command>
++						<replaceable>value</replaceable>
++					</arg>
++					<command>}</command>
++				</cmdsynopsis>
++			</para>
++			<example>
++				<title>using the vmap statement</title>
++				<programlisting>
++# jump to different chains depending on layer 4 protocol type:
++nft add rule ip filter input ip protocol vmap { tcp : jump tcp-chain, udp : jump udp-chain , icmp : jump icmp-chain }
++				</programlisting>
++			</example>
++		</refsect2>
+ 	</refsect1>
+ 
+ 	<refsect1>
+-- 
+1.8.3.1
+

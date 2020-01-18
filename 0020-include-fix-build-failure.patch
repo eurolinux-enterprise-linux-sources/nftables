@@ -1,0 +1,37 @@
+From f663f587d6e0ceb0674575db7c8538cf672ae160 Mon Sep 17 00:00:00 2001
+From: Phil Sutter <psutter@redhat.com>
+Date: Fri, 15 Mar 2019 14:35:12 +0100
+Subject: [PATCH] include: fix build failure
+
+Bugzilla: https://bugzilla.redhat.com/show_bug.cgi?id=1646336
+Upstream Status: nftables commit cea0712fe7759
+
+commit cea0712fe7759fc1153cd0fd1c882486d036647d
+Author: Florian Westphal <fw@strlen.de>
+Date:   Sat Feb 17 23:21:14 2018 +0100
+
+    include: fix build failure
+
+    on older machine of mine:
+    ../include/nftables.h:130:30: error: 'UINT_MAX' undeclared (first use in this function)
+
+    Signed-off-by: Florian Westphal <fw@strlen.de>
+---
+ include/nftables.h | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/include/nftables.h b/include/nftables.h
+index 0abbcaf..2c18c48 100644
+--- a/include/nftables.h
++++ b/include/nftables.h
+@@ -3,6 +3,7 @@
+ 
+ #include <stdbool.h>
+ #include <stdarg.h>
++#include <limits.h>
+ #include <utils.h>
+ 
+ enum numeric_level {
+-- 
+1.8.3.1
+
